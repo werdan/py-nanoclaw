@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from nanoclaw.dispatch import load_session_id, save_session_id
 from nanoclaw.loop import run_worker_loop
 from nanoclaw.models import Inbound
-from nanoclaw.session import load_session_id, save_session_id
 
 
 def test_load_session_missing(tmp_path: Path) -> None:
@@ -66,7 +66,7 @@ async def test_failed_dispatch_drops_batch() -> None:
     q: asyncio.Queue[Inbound] = asyncio.Queue()
     await q.put(Inbound("x"))
 
-    def dispatch(_: list[Inbound]) -> None:
+    async def dispatch(_: list[Inbound]) -> None:
         raise RuntimeError("down")
 
     stop = asyncio.Event()
@@ -110,7 +110,7 @@ async def test_queue_join_completes_after_failed_dispatch() -> None:
     await q.put(Inbound("a"))
     await q.put(Inbound("b"))
 
-    def dispatch(_: list[Inbound]) -> None:
+    async def dispatch(_: list[Inbound]) -> None:
         raise RuntimeError("fail")
 
     stop = asyncio.Event()

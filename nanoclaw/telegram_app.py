@@ -23,10 +23,9 @@ from telegram import Bot, Update
 from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
-from nanoclaw.dispatch import dispatch as agent_dispatch
+from nanoclaw.dispatch import dispatch as agent_dispatch, load_session_id
 from nanoclaw.loop import run_worker_loop
 from nanoclaw.models import Inbound
-from nanoclaw.session import load_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +144,35 @@ def _is_image_document(mime_type: str | None) -> bool:
     return bool(mime_type and mime_type.startswith("image/"))
 
 
+def _image_inbound(tmp_path: Path, caption: str) -> Inbound:
+    content = f"User sent an image.\nLocal image path (temporary): {tmp_path}"
+    if caption:
+        content = f"User sent an image.\nCaption: {caption}\nLocal image path (temporary): {tmp_path}"
+    return Inbound(content, temp_paths=(tmp_path,))
+
+
+def _media_dir() -> Path:
+    raw = os.environ.get("NANOCLAW_MEDIA_DIR")
+    if raw and raw.strip():
+        path = Path(raw).expanduser()
+    else:
+        path = Path.cwd() / ".nanoclaw_media"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _configure_logging() -> None:
+    """Root WARNING so HTTP clients (httpx, httpcore) do not log full request URLs.
+
+    Telegram embeds the bot token in the API path; those libraries log the full URL at INFO.
+    ``nanoclaw`` stays at INFO for normal app messages.
+    """
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("nanoclaw").setLevel(logging.INFO)
+
+
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    _configure_logging()
     load_dotenv()
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -162,10 +188,22 @@ def main() -> None:
     out_queue: asyncio.Queue[str] = asyncio.Queue()
     stop = asyncio.Event()
     session_ref: list[str | None] = [load_session_id(SESSION_PATH)]
+    media_dir = _media_dir()
+    # Set in post_init so handle_batch can notify on dispatch failure.
+    bot_ref: list[Bot | None] = [None]
 
     async def handle_batch(batch: list[Inbound]) -> None:
         try:
             await agent_dispatch(batch, out_queue, session_ref, SESSION_PATH)
+        except Exception:
+            logger.exception("Agent dispatch failed")
+            bot = bot_ref[0]
+            if bot is not None:
+                await send_telegram_message(
+                    bot,
+                    chat_id=allowed_user_id,
+                    text="Sorry, processing failed. Please try again in a moment.",
+                )
         finally:
             # Batch-level cleanup: once dispatch returns, the agent no longer needs uploaded image files.
             cleanup_inbound_temp_files(batch)
@@ -225,7 +263,7 @@ def main() -> None:
             return
 
         photo = update.message.photo[-1]
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False, dir=media_dir) as tmp:
             tmp_path = Path(tmp.name)
         try:
             tg_file = await context.bot.get_file(photo.file_id)
@@ -241,14 +279,7 @@ def main() -> None:
             return
 
         caption = (update.message.caption or "").strip()
-        if caption:
-            content = (
-                f"User sent an image.\nCaption: {caption}\n"
-                f"Local image path (temporary): {tmp_path}"
-            )
-        else:
-            content = f"User sent an image.\nLocal image path (temporary): {tmp_path}"
-        await inbound.put(Inbound(content, temp_paths=(tmp_path,)))
+        await inbound.put(_image_inbound(tmp_path, caption))
 
     async def on_image_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.document:
@@ -266,7 +297,7 @@ def main() -> None:
             return
 
         suffix = _document_suffix(document.file_name, document.mime_type)
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=media_dir) as tmp:
             tmp_path = Path(tmp.name)
         try:
             tg_file = await context.bot.get_file(document.file_id)
@@ -282,14 +313,7 @@ def main() -> None:
             return
 
         caption = (update.message.caption or "").strip()
-        if caption:
-            content = (
-                f"User sent an image file.\nCaption: {caption}\n"
-                f"Local image path (temporary): {tmp_path}"
-            )
-        else:
-            content = f"User sent an image file.\nLocal image path (temporary): {tmp_path}"
-        await inbound.put(Inbound(content, temp_paths=(tmp_path,)))
+        await inbound.put(_image_inbound(tmp_path, caption))
 
     async def send_outbound(application: Application) -> None:
         bot = application.bot
@@ -299,10 +323,12 @@ def main() -> None:
             except TimeoutError:
                 continue
             # Private DM: chat_id for send_message is the user's id (same as TELEGRAM_USER_ID).
-            # TODO: Telegram caps messages at 4096 chars; split or truncate long Claude replies.
-            await send_telegram_message(bot, chat_id=allowed_user_id, text=text)
+            for i in range(0, len(text), 4096):
+                chunk = text[i : i + 4096]
+                await send_telegram_message(bot, chat_id=allowed_user_id, text=chunk)
 
     async def post_init(application: Application) -> None:
+        bot_ref[0] = application.bot
         asyncio.create_task(
             run_worker_loop(inbound, handle_batch, wait_timeout_s=0.5, stop=stop),
             name="nanoclaw-worker",

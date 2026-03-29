@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -12,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 async def run_worker_loop(
     queue: asyncio.Queue[Inbound],
-    dispatch: Callable[[list[Inbound]], None] | Callable[[list[Inbound]], Awaitable[None]],
+    dispatch: Callable[[list[Inbound]], Awaitable[None]],
     *,
     wait_timeout_s: float = 0.5,
     stop: asyncio.Event | None = None,
@@ -21,7 +20,7 @@ async def run_worker_loop(
     Wait for inbound items on ``queue``, drain any additional items already queued into one
     batch, then call ``dispatch``.
 
-    ``dispatch`` may be sync or async. If it raises, the batch is logged and dropped (no retry).
+    ``dispatch`` is async. If it raises, the batch is logged and dropped (no retry).
 
     **Queue contract:** each :meth:`~asyncio.Queue.get` / :meth:`~asyncio.Queue.get_nowait` must be
     followed by exactly one :meth:`~asyncio.Queue.task_done` so :meth:`~asyncio.Queue.join` can
@@ -44,10 +43,7 @@ async def run_worker_loop(
                 break
 
         try:
-            if inspect.iscoroutinefunction(dispatch):
-                await dispatch(batch)
-            else:
-                dispatch(batch)
+            await dispatch(batch)
         except Exception:
             logger.exception(
                 "dispatch failed; dropping batch of %d inbound item(s)", len(batch)

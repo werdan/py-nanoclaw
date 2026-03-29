@@ -1,0 +1,16 @@
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# Python
+.venv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# VCS and runtime (not used in bot image build context)
+.git
+.gitignore
+runtime/

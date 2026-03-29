@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -11,4 +10,3 @@ class Inbound:
 
     content: str
     temp_paths: tuple[Path, ...] = ()
-    created_at: float = field(default_factory=time.time)
