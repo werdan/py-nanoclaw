@@ -3,7 +3,10 @@ Telegram channel: incoming messages → ``inbound`` queue; ``out_queue`` → sen
 
 Uses the same ``run_worker_loop``, ``dispatch``, and session file as :mod:`nanoclaw.cli`.
 
-Run: ``python -m nanoclaw.telegram_app`` (requires ``TELEGRAM_BOT_TOKEN`` in ``.env``).
+Requires ``TELEGRAM_BOT_TOKEN`` and ``TELEGRAM_USER_ID`` (your numeric Telegram **user** id — stable;
+private-DM ``chat_id`` for ``send_message`` matches that id).
+
+Run: ``python -m nanoclaw.telegram_app`` (``nanoclaw-telegram``).
 """
 
 from __future__ import annotations
@@ -84,11 +87,14 @@ async def send_telegram_message(
             return
 
 
-def _allowed_chat_id() -> int | None:
-    raw = os.environ.get("TELEGRAM_CHAT_ID")
-    if raw is None or raw.strip() == "":
-        return None
-    return int(raw.strip())
+def _required_user_id() -> int:
+    raw = os.environ.get("TELEGRAM_USER_ID")
+    if raw is None or str(raw).strip() == "":
+        raise SystemExit(
+            "Set TELEGRAM_USER_ID to your Telegram user id (integer). "
+            "Only that user may use this bot. Find it via @userinfobot or https://t.me/userinfobot ."
+        )
+    return int(str(raw).strip())
 
 
 def main() -> None:
@@ -98,14 +104,12 @@ def main() -> None:
     if not token:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in the environment or .env")
 
+    allowed_user_id = _required_user_id()
+
     inbound: asyncio.Queue[Inbound] = asyncio.Queue()
     out_queue: asyncio.Queue[str] = asyncio.Queue()
     stop = asyncio.Event()
     session_ref: list[str | None] = [load_session_id(SESSION_PATH)]
-    allowed = _allowed_chat_id()
-    # If TELEGRAM_CHAT_ID is set, use it from startup so outbound works before any inbound
-    # (e.g. scheduled work); otherwise the first allowed message sets the chat.
-    reply_chat_id: list[int | None] = [allowed]
 
     async def handle_batch(batch: list[Inbound]) -> None:
         await agent_dispatch(batch, out_queue, session_ref, SESSION_PATH)
@@ -113,14 +117,13 @@ def main() -> None:
     async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:
             return
-        chat = update.effective_chat
-        if chat is None:
+        user = update.effective_user
+        if user is None:
             return
-        cid = chat.id
-        if allowed is not None and cid != allowed:
-            await update.message.reply_text("This bot is not available for this chat.")
+        if user.id != allowed_user_id:
+            logger.warning("Rejected message from unauthorized user id %s", user.id)
+            await update.message.reply_text("Unauthorized.")
             return
-        reply_chat_id[0] = cid
         await inbound.put(Inbound(update.message.text))
 
     async def send_outbound(application: Application) -> None:
@@ -130,12 +133,9 @@ def main() -> None:
                 text = await asyncio.wait_for(out_queue.get(), timeout=0.5)
             except TimeoutError:
                 continue
-            rid = reply_chat_id[0]
-            if rid is None:
-                logger.warning("No Telegram chat yet; dropping outbound text.")
-                continue
+            # Private DM: chat_id for send_message is the user's id (same as TELEGRAM_USER_ID).
             # TODO: Telegram caps messages at 4096 chars; split or truncate long Claude replies.
-            await send_telegram_message(bot, chat_id=rid, text=text)
+            await send_telegram_message(bot, chat_id=allowed_user_id, text=text)
 
     async def post_init(application: Application) -> None:
         asyncio.create_task(
@@ -154,7 +154,12 @@ def main() -> None:
         .post_stop(post_stop)
         .build()
     )
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), on_text))
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND),
+            on_text,
+        )
+    )
 
     application.run_polling(drop_pending_updates=True)
 
