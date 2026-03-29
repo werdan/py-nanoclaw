@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from pathlib import Path
 
@@ -25,10 +26,16 @@ def _model_name() -> str:
 
 def _claude_options(session_ref: list[str | None]) -> ClaudeAgentOptions:
     sid = session_ref[0]
-    kwargs: dict[str, str] = {"model": _model_name()}
+    kwargs: dict[str, object] = {
+        "model": _model_name(),
+        "permission_mode": "bypassPermissions",
+        "allow_dangerously_skip_permissions": True,
+    }
     if sid:
         kwargs["resume"] = sid
-    return ClaudeAgentOptions(**kwargs)
+    supported = set(inspect.signature(ClaudeAgentOptions).parameters)
+    filtered = {k: v for k, v in kwargs.items() if k in supported}
+    return ClaudeAgentOptions(**filtered)
 
 
 async def dispatch(

@@ -14,9 +14,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 from telegram import Bot, Update
 from telegram.error import NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
@@ -97,6 +99,52 @@ def _required_user_id() -> int:
     return int(str(raw).strip())
 
 
+async def transcribe_telegram_voice(
+    client: AsyncOpenAI,
+    *,
+    voice_file_id: str,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> str | None:
+    """Download one Telegram voice message and transcribe it via OpenAI Whisper."""
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        tg_file = await context.bot.get_file(voice_file_id)
+        await tg_file.download_to_drive(custom_path=str(tmp_path))
+        with tmp_path.open("rb") as audio_file:
+            result = await client.audio.transcriptions.create(model="whisper-1", file=audio_file)
+        text = (result.text or "").strip()
+        return text if text else None
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def cleanup_inbound_temp_files(batch: list[Inbound]) -> None:
+    """Delete any per-message temp files attached to this batch."""
+    for inbound in batch:
+        for temp_path in inbound.temp_paths:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception("Failed to delete temp file: %s", temp_path)
+
+
+def _document_suffix(file_name: str | None, mime_type: str | None) -> str:
+    if file_name:
+        suffix = Path(file_name).suffix
+        if suffix:
+            return suffix
+    if mime_type == "image/png":
+        return ".png"
+    if mime_type == "image/webp":
+        return ".webp"
+    return ".jpg"
+
+
+def _is_image_document(mime_type: str | None) -> bool:
+    return bool(mime_type and mime_type.startswith("image/"))
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     load_dotenv()
@@ -105,6 +153,10 @@ def main() -> None:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in the environment or .env")
 
     allowed_user_id = _required_user_id()
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    openai_client = AsyncOpenAI(api_key=openai_api_key) if openai_api_key else None
+    if openai_client is None:
+        logger.warning("OPENAI_API_KEY is not set; voice transcription is disabled.")
 
     inbound: asyncio.Queue[Inbound] = asyncio.Queue()
     out_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -112,7 +164,11 @@ def main() -> None:
     session_ref: list[str | None] = [load_session_id(SESSION_PATH)]
 
     async def handle_batch(batch: list[Inbound]) -> None:
-        await agent_dispatch(batch, out_queue, session_ref, SESSION_PATH)
+        try:
+            await agent_dispatch(batch, out_queue, session_ref, SESSION_PATH)
+        finally:
+            # Batch-level cleanup: once dispatch returns, the agent no longer needs uploaded image files.
+            cleanup_inbound_temp_files(batch)
 
     async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:
@@ -122,9 +178,118 @@ def main() -> None:
             return
         if user.id != allowed_user_id:
             logger.warning("Rejected message from unauthorized user id %s", user.id)
-            await update.message.reply_text("Unauthorized.")
             return
         await inbound.put(Inbound(update.message.text))
+
+    async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if openai_client is None or not update.message or not update.message.voice:
+            return
+        user = update.effective_user
+        if user is None:
+            return
+        if user.id != allowed_user_id:
+            logger.warning("Rejected voice from unauthorized user id %s", user.id)
+            return
+        try:
+            text = await transcribe_telegram_voice(
+                openai_client,
+                voice_file_id=update.message.voice.file_id,
+                context=context,
+            )
+        except Exception:
+            logger.exception("Voice transcription failed.")
+            await send_telegram_message(
+                context.bot,
+                chat_id=allowed_user_id,
+                text="Voice transcription failed. Please try again.",
+            )
+            return
+        if not text:
+            logger.warning("Voice transcription returned empty text.")
+            await send_telegram_message(
+                context.bot,
+                chat_id=allowed_user_id,
+                text="I could not understand that voice message. Please try again.",
+            )
+            return
+        await inbound.put(Inbound(text))
+
+    async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message or not update.message.photo:
+            return
+        user = update.effective_user
+        if user is None:
+            return
+        if user.id != allowed_user_id:
+            logger.warning("Rejected photo from unauthorized user id %s", user.id)
+            return
+
+        photo = update.message.photo[-1]
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            tg_file = await context.bot.get_file(photo.file_id)
+            await tg_file.download_to_drive(custom_path=str(tmp_path))
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            logger.exception("Failed to download Telegram photo.")
+            await send_telegram_message(
+                context.bot,
+                chat_id=allowed_user_id,
+                text="I could not download that image. Please try again.",
+            )
+            return
+
+        caption = (update.message.caption or "").strip()
+        if caption:
+            content = (
+                f"User sent an image.\nCaption: {caption}\n"
+                f"Local image path (temporary): {tmp_path}"
+            )
+        else:
+            content = f"User sent an image.\nLocal image path (temporary): {tmp_path}"
+        await inbound.put(Inbound(content, temp_paths=(tmp_path,)))
+
+    async def on_image_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message or not update.message.document:
+            return
+        user = update.effective_user
+        if user is None:
+            return
+        if user.id != allowed_user_id:
+            logger.warning("Rejected document from unauthorized user id %s", user.id)
+            return
+
+        document = update.message.document
+        if not _is_image_document(document.mime_type):
+            # Ignore non-image documents for now.
+            return
+
+        suffix = _document_suffix(document.file_name, document.mime_type)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            tg_file = await context.bot.get_file(document.file_id)
+            await tg_file.download_to_drive(custom_path=str(tmp_path))
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            logger.exception("Failed to download Telegram image document.")
+            await send_telegram_message(
+                context.bot,
+                chat_id=allowed_user_id,
+                text="I could not download that image file. Please try again.",
+            )
+            return
+
+        caption = (update.message.caption or "").strip()
+        if caption:
+            content = (
+                f"User sent an image file.\nCaption: {caption}\n"
+                f"Local image path (temporary): {tmp_path}"
+            )
+        else:
+            content = f"User sent an image file.\nLocal image path (temporary): {tmp_path}"
+        await inbound.put(Inbound(content, temp_paths=(tmp_path,)))
 
     async def send_outbound(application: Application) -> None:
         bot = application.bot
@@ -158,6 +323,24 @@ def main() -> None:
         MessageHandler(
             filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND),
             on_text,
+        )
+    )
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.VOICE,
+            on_voice,
+        )
+    )
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.PHOTO,
+            on_photo,
+        )
+    )
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.Document.ALL,
+            on_image_document,
         )
     )
 

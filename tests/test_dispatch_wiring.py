@@ -11,6 +11,7 @@ from claude_agent_sdk import ResultMessage, SystemMessage
 from nanoclaw.dispatch import dispatch as agent_dispatch
 from nanoclaw.loop import run_worker_loop
 from nanoclaw.models import Inbound
+from nanoclaw.telegram_app import cleanup_inbound_temp_files
 
 
 def _success_result(*, session_id: str, result: str) -> ResultMessage:
@@ -80,3 +81,20 @@ async def test_run_worker_loop_cli_style_handle_batch(monkeypatch: pytest.Monkey
 def test_telegram_app_module_imports() -> None:
     """Smoke-import so wiring stays valid (requires python-telegram-bot)."""
     import nanoclaw.telegram_app  # noqa: F401
+
+
+def test_cleanup_inbound_temp_files(tmp_path: Path) -> None:
+    temp_a = tmp_path / "a.jpg"
+    temp_b = tmp_path / "b.jpg"
+    temp_a.write_text("a", encoding="utf-8")
+    temp_b.write_text("b", encoding="utf-8")
+    batch = [
+        Inbound("with file a", temp_paths=(temp_a,)),
+        Inbound("with file b", temp_paths=(temp_b,)),
+        Inbound("no files"),
+    ]
+
+    cleanup_inbound_temp_files(batch)
+
+    assert not temp_a.exists()
+    assert not temp_b.exists()
