@@ -75,3 +75,8 @@ async def test_run_worker_loop_cli_style_handle_batch(monkeypatch: pytest.Monkey
     assert await out_queue.get() == "echo:ping"
     assert session_ref[0] == "loop-test"
     assert session_path.read_text(encoding="utf-8").strip() == "loop-test"
+
+
+def test_telegram_app_module_imports() -> None:
+    """Smoke-import so wiring stays valid (requires python-telegram-bot)."""
+    import nanoclaw.telegram_app  # noqa: F401
