@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -23,30 +24,41 @@ def test_load_save_roundtrip(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_batches_and_task_done() -> None:
-    q: asyncio.Queue[Inbound] = asyncio.Queue()
-    seen: list[list[Inbound]] = []
+async def test_worker_e2e_batching_and_dispatch(capsys: pytest.CaptureFixture[str]) -> None:
+    """
+    End-to-end: two inbound messages, dispatch logs each batch then each line (like a real agent).
+
+    Asserts (1) every message appears in output and (2) batch sizes sum to 2 — whether the worker
+    drains one batch of two or two batches of one depends on scheduling.
+    """
+    queue: asyncio.Queue[Inbound] = asyncio.Queue()
+    stop = asyncio.Event()
 
     async def dispatch(batch: list[Inbound]) -> None:
-        seen.append(list(batch))
+        print(f"dispatch: {len(batch)} message(s)")
+        for msg in batch:
+            print(f"  Agent got: {msg.content}")
 
     async def producer() -> None:
-        await q.put(Inbound("a"))
-        await q.put(Inbound("b"))
-        await asyncio.sleep(0.05)
+        await queue.put(Inbound("a"))
+        await queue.put(Inbound("b"))
 
-    stop = asyncio.Event()
     worker = asyncio.create_task(
-        run_worker_loop(q, dispatch, wait_timeout_s=0.05, stop=stop)
+        run_worker_loop(queue, dispatch, wait_timeout_s=0.05, stop=stop)
     )
     await producer()
     await asyncio.sleep(0.2)
     stop.set()
     await asyncio.wait_for(worker, timeout=2.0)
 
-    assert len(seen) >= 1
-    assert {m.content for m in seen[0]} == {"a", "b"}
-    assert q.empty()
+    out = capsys.readouterr().out
+    assert queue.empty()
+
+    contents = re.findall(r"Agent got: (.+)", out)
+    assert sorted(contents) == ["a", "b"]
+
+    batch_sizes = [int(m.group(1)) for m in re.finditer(r"dispatch: (\d+) message", out)]
+    assert sum(batch_sizes) == 2
 
 
 @pytest.mark.asyncio
