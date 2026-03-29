@@ -5,6 +5,9 @@ description = "asyncio inbound queue + file-backed session id for channel/agent 
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+nanoclaw = "nanoclaw.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
 
