@@ -8,9 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
+from dotenv import load_dotenv
+
+from nanoclaw.dispatch import dispatch as agent_dispatch
 from nanoclaw.loop import run_worker_loop
 from nanoclaw.models import Inbound
+from nanoclaw.session import load_session_id
+
+SESSION_PATH = Path.cwd() / ".nanoclaw_session"
 
 
 def _readline_with_prompt() -> str:
@@ -45,7 +52,8 @@ async def reader(inbound: asyncio.Queue[Inbound], stop: asyncio.Event) -> None:
                 break
             if s:
                 await inbound.put(Inbound(s))
-                # Let the worker + printer run before drawing the next "> " (avoids reply on same row as prompt).
+                # Yield once so the event loop can schedule other tasks; does not guarantee reply
+                # before the next prompt (worker → dispatch → printer are several hops away).
                 await asyncio.sleep(0)
     finally:
         stop.set()
@@ -70,19 +78,20 @@ async def _run() -> None:
     inbound: asyncio.Queue[Inbound] = asyncio.Queue()
     out_queue: asyncio.Queue[str] = asyncio.Queue()
     stop = asyncio.Event()
+    session_ref: list[str | None] = [load_session_id(SESSION_PATH)]
 
-    async def dispatch(batch: list[Inbound]) -> None:
-        for msg in batch:
-            await out_queue.put(f"Hello, you said: {msg.content}")
+    async def handle_batch(batch: list[Inbound]) -> None:
+        await agent_dispatch(batch, out_queue, session_ref, SESSION_PATH)
 
     await asyncio.gather(
         reader(inbound, stop),
-        run_worker_loop(inbound, dispatch, wait_timeout_s=0.5, stop=stop),
+        run_worker_loop(inbound, handle_batch, wait_timeout_s=0.5, stop=stop),
         printer(out_queue, stop),
     )
 
 
 def main() -> None:
+    load_dotenv()
     asyncio.run(_run())
 
 

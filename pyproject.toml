@@ -3,7 +3,10 @@ name = "nanoclaw"
 version = "0.1.0"
 description = "asyncio inbound queue + file-backed session id for channel/agent decoupling"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "claude-agent-sdk",
+    "python-dotenv>=1.0",
+]
 
 [project.scripts]
 nanoclaw = "nanoclaw.cli:main"
