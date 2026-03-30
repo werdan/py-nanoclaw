@@ -38,12 +38,19 @@ services:
     environment:
       NANOCLAW_AGENT_PORT: 8000
       NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
-      ONECLI_URL: ${ONECLI_URL:-http://onecli:10255}
-      ONECLI_API_KEY: ${ONECLI_API_KEY:-}
       NANOCLAW_CWD: /work
       CLAUDE_MODEL: ${CLAUDE_MODEL:-}
       GITHUB_REPO_URL: ${GITHUB_REPO_URL:-}
       USER_CONTEXT_SUBPATH: ${USER_CONTEXT_SUBPATH:-}
+      # OneCLI HTTPS proxy: Claude Code CLI routes API calls through OneCLI gateway.
+      ANTHROPIC_API_KEY: placeholder
+      HTTP_PROXY: http://x:${ONECLI_AGENT_TOKEN:-placeholder}@onecli:10255
+      HTTPS_PROXY: http://x:${ONECLI_AGENT_TOKEN:-placeholder}@onecli:10255
+      http_proxy: http://x:${ONECLI_AGENT_TOKEN:-placeholder}@onecli:10255
+      https_proxy: http://x:${ONECLI_AGENT_TOKEN:-placeholder}@onecli:10255
+      SSL_CERT_FILE: /onecli-data/gateway/ca.pem
+      REQUESTS_CA_BUNDLE: /onecli-data/gateway/ca.pem
+      NODE_EXTRA_CA_CERTS: /onecli-data/gateway/ca.pem
     volumes:
       - ${PWD}/runtime/sessions:/runtime/sessions
       - ${PWD}/runtime/media:/runtime/media:ro
