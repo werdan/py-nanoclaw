@@ -84,7 +84,7 @@ ssh "${REMOTE_HOST}" "cd '${REMOTE_APP_DIR}' && \
 echo "==> Building agent image (nanoclaw-agent)"
 ssh "${REMOTE_HOST}" "cd '${REMOTE_APP_DIR}' && sudo docker build -f container/Dockerfile -t nanoclaw-agent ."
 
-echo "==> Deploying compose (bot + OneCLI + docker-socket-proxy)"
+echo "==> Deploying compose (bot + agent + OneCLI + Postgres)"
 ssh "${REMOTE_HOST}" "cd '${REMOTE_APP_DIR}' && sudo docker compose up -d --build"
 
 echo "==> Current containers"

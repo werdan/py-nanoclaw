@@ -1,8 +1,8 @@
-"""Docker entrypoint: stdin JSON → ``nanoclaw.claude_agent_run`` (same as local dev)."""
+"""Docker entrypoint: persistent HTTP agent server."""
 
 from __future__ import annotations
 
-from nanoclaw.claude_agent_run import main
+from nanoclaw.agent_http_server import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

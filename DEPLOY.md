@@ -49,12 +49,6 @@ NANOCLAW_GIT_REMOTE=https://github.com/YOU/py-nanoclaw.git bash ops/deploy_remot
 
 Branch defaults to `main`; override with `NANOCLAW_GIT_BRANCH=master`. Legacy rsync: `DEPLOY_SYNC=rsync`. After the first run, edit `.env` on the server if the script created it from `.env.example`, then rerun the deploy command.
 
-On the server, confirm `NANOCLAW_DOCKER_NETWORK` matches the isolated agent network (see `.env.example`; default `nanoclaw_agent`). The compose default bridge is usually `nanoclaw_default` for the bot and socket proxy:
-
-```bash
-sudo docker network ls
-```
-
 ## 1) First-time setup + deploy
 
 Ensure the server has a git checkout at the app path (see GCP section above), then from your local machine:
@@ -68,11 +62,7 @@ The script will:
 - install Docker + Compose plugin on remote
 - create runtime folders
 - create `.env` from `.env.example` if missing
-- start compose (bot, OneCLI, docker-socket-proxy)
-
-Security note:
-- Bot containers do **not** mount the host Docker socket directly.
-- A `docker-socket-proxy` sidecar is used so bot only talks to a restricted Docker API endpoint.
+- start compose (bot, agent, OneCLI, Postgres)
 
 If `.env` is created for the first time, fill it on remote and rerun the deploy command.
 
@@ -88,7 +78,7 @@ If `.env` is created for the first time, fill it on remote and rerun the deploy 
 
 ## 3) OneCLI setup (dashboard + `.env`)
 
-The bot talks to the OneCLI API to fetch SDK-style container config, then applies that env/CA config to spawned agent containers. You must create OneCLI credentials/secrets once and put the API key in `.env`.
+The agent service talks to the OneCLI API to fetch SDK-style container config and apply proxy/CA env. You must create OneCLI credentials/secrets once and put the API key in `.env`.
 
 ### Local (Docker on your laptop)
 
@@ -102,7 +92,7 @@ The bot talks to the OneCLI API to fetch SDK-style container config, then applie
    - `ONECLI_API_KEY=<paste the OneCLI API key>`
 7. Recreate the bot so it picks up env: `docker compose up -d bot` (or `docker compose up -d`).
 
-Nanoclaw fetches OneCLI’s SDK container-config (`/api/container-config`) and applies the returned proxy env + CA mount to each agent run. This matches the OneCLI SDK flow ([Node SDK docs](https://www.onecli.sh/docs/sdks/node)).
+Nanoclaw fetches OneCLI’s SDK container-config (`/api/container-config`) and applies the returned proxy env + CA config in the running agent service. This matches the OneCLI SDK flow ([Node SDK docs](https://www.onecli.sh/docs/sdks/node)).
 
 ### Remote server (SSH tunnel)
 

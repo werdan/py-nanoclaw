@@ -23,9 +23,9 @@ bash ops/local_docker_up.sh
 
 The script:
 
-- sets `COMPOSE_PROJECT_NAME=nanoclaw` so the default bridge is **`nanoclaw_default`**; agent containers use **`nanoclaw_agent`** (with OneCLI only, not the Docker socket proxy)
+- sets `COMPOSE_PROJECT_NAME=nanoclaw`
 - builds **`nanoclaw-agent`**
-- runs **`docker compose up`** (bot, OneCLI, docker-socket-proxy)
+- runs **`docker compose up`** (bot, agent, OneCLI, Postgres)
 
 ## 3) Logs and stop
 
@@ -73,7 +73,6 @@ The Telegram bot still expects Docker for dispatch unless you run it with `NANOC
 ## Notes
 
 - **OneCLI API key scope**: `ONECLI_API_KEY` is used to fetch `/api/container-config`; the gateway then uses the returned proxy credentials internally. If config fetch fails from host-run tests, set `NANOCLAW_ONECLI_API_URL=http://127.0.0.1:10254`.
-- **Socket proxy**: the bot talks to Docker via `docker-socket-proxy`, not the raw host socket.
 - **Postgres**: OneCLI uses a local `postgres:16-alpine` service; data is in the `pgdata` volume (not exposed on host ports).
 - **Ports**: OneCLI publishes `10254` / `10255` on localhost for dashboard and gateway.
 - **Failures**: `dispatch` is fail-fast. If the agent call fails, Telegram gets a short error message (see `nanoclaw/telegram_app.py`); resend the message to retry.

@@ -7,10 +7,10 @@ Compared to the original TypeScript implementation, py-nanoclaw favours simplici
 ## Architecture
 
 ```
-Telegram ─► asyncio.Queue ─► worker loop ─► dispatch (spawns agent container) ─► reply queue ─► Telegram
+Telegram ─► asyncio.Queue ─► worker loop ─► dispatch (HTTP to persistent agent) ─► reply queue ─► Telegram
 ```
 
-**Bot container** (long-running) receives messages, manages the queue, and spawns ephemeral **agent containers** via Docker. The agent calls the Claude Agent SDK with session resumption and returns a JSON result on stdout. The two containers are isolated -- the agent never sees channel tokens or other secrets.
+**Bot container** (long-running) receives messages and manages the queue. **Agent container** is a separate long-running service with an HTTP endpoint. The bot posts prompt/session payloads to the agent, which calls Claude Agent SDK and returns JSON. The two containers are isolated -- the agent never sees Telegram secrets.
 
 ### Key components
 
@@ -18,15 +18,14 @@ Telegram ─► asyncio.Queue ─► worker loop ─► dispatch (spawns agent c
 |------|---------|
 | `nanoclaw/telegram_app.py` | Telegram channel (text, voice, images) |
 | `nanoclaw/loop.py` | Async worker loop -- drains queue, dispatches batches |
-| `nanoclaw/dispatch.py` | Spawns agent containers, reads JSON result |
+| `nanoclaw/dispatch.py` | Sends HTTP requests to persistent agent service |
 | `nanoclaw/cli.py` | Local REPL for testing without Telegram |
-| `container/agent_runner.py` | Runs inside the agent container -- stdin JSON in, stdout JSON out |
+| `container/agent_runner.py` | Runs inside the agent container -- starts HTTP server |
 
 ## Security
 
 - **User-locked**: Telegram handler rejects any user ID that isn't yours.
 - **Container isolation**: The agent runs in a separate Docker container with no access to bot secrets. Claude credentials are provided via [OneCLI](https://github.com/onecli/onecli) (injected into the agent container as `ONECLI_*` variables).
-- **Docker socket proxy**: The bot talks to Docker through [Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy), restricted to container operations only. Ephemeral **agent** containers attach only to **`nanoclaw_agent`** (with OneCLI), not the default network where the socket proxy runs.
 - **Temp file cleanup**: Uploaded images are deleted after the agent processes them.
 
 ## Quick start
@@ -42,7 +41,7 @@ python -m nanoclaw.cli
 
 ### Docker Compose (Telegram)
 
-Compose runs **Postgres** (for OneCLI’s DB), **OneCLI**, the **bot**, and **docker-socket-proxy**. Postgres is not published to the host; only OneCLI’s dashboard/gateway ports are bound to loopback.
+Compose runs **Postgres** (for OneCLI’s DB), **OneCLI**, the **agent**, and the **bot**. Postgres is not published to the host; only OneCLI’s dashboard/gateway ports are bound to loopback.
 
 ```bash
 # Build images
@@ -63,11 +62,11 @@ docker compose up -d
 | `ONECLI_API_KEY` | yes (after UI setup) | OneCLI dashboard API key (`oc_…`), used to fetch `/api/container-config` (SDK-style wiring) |
 | `NANOCLAW_ONECLI_API_URL` | no | OneCLI API base URL override (default derives from `ONECLI_URL`, swapping `:10255` -> `:10254`) |
 | `ONECLI_DB_PASSWORD` | no | Postgres password for the bundled `postgres` service (default `onecli`; must be URL-safe or avoid special chars in `DATABASE_URL`) |
-| `NANOCLAW_AGENT_IMAGE` | no | Agent container image (default: `nanoclaw-agent`) |
+| `NANOCLAW_AGENT_IMAGE` | no | Agent service image (default: `nanoclaw-agent`) |
+| `NANOCLAW_AGENT_URL` | no | Bot → agent HTTP endpoint (default: `http://agent:8000/message`) |
 | `NANOCLAW_AGENT_LOCAL` | no | Set `1` to run the Claude SDK on the host (no docker agent); see [LOCAL.md](LOCAL.md) |
 | `NANOCLAW_ONECLI_CA_PATH` | with local + OneCLI | Host path to `gateway/ca.pem` for trusting the OneCLI MITM CA |
 | `NANOCLAW_AGENT_TIMEOUT_S` | no | Agent timeout in seconds (default: 180) |
-| `NANOCLAW_DOCKER_NETWORK` | no | Network for agent containers (default `nanoclaw_agent`; must reach OneCLI, not the socket proxy) |
 
 ## Multimodal
 

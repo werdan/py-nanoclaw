@@ -14,35 +14,47 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_USER_ID: ${TELEGRAM_USER_ID}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      NANOCLAW_AGENT_IMAGE: ${NANOCLAW_AGENT_IMAGE:-nanoclaw-agent}
+      NANOCLAW_AGENT_URL: ${NANOCLAW_AGENT_URL:-http://agent:8000/message}
       NANOCLAW_AGENT_TIMEOUT_S: ${NANOCLAW_AGENT_TIMEOUT_S:-180}
       NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
-      # Isolated network for agent containers (no route to docker-socket-proxy).
-      NANOCLAW_DOCKER_NETWORK: ${NANOCLAW_DOCKER_NETWORK:-nanoclaw_agent}
       NANOCLAW_MEDIA_DIR: /runtime/media
-      NANOCLAW_DOCKER_HOST_SESSION_DIR: ${PWD}/runtime/sessions
-      NANOCLAW_DOCKER_HOST_MEDIA_DIR: ${PWD}/runtime/media
-      DOCKER_HOST: tcp://docker-socket-proxy:2375
       ONECLI_URL: ${ONECLI_URL:-http://onecli:10255}
       ONECLI_API_KEY: ${ONECLI_API_KEY:-}
-      # Docker volume name for OneCLI data (CA cert for agent MITM trust). Default matches project `nanoclaw`.
-      NANOCLAW_ONECLI_DATA_VOLUME: ${NANOCLAW_ONECLI_DATA_VOLUME:-nanoclaw_onecli-data}
+      # User context: git repo subpath mounted into /work alongside CLAUDE.md.
+      GITHUB_REPO_URL: ${GITHUB_REPO_URL:-}
+      USER_CONTEXT_SUBPATH: ${USER_CONTEXT_SUBPATH:-}
     depends_on:
-      - docker-socket-proxy
+      - agent
       - onecli
 
-  docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
+  agent:
+    build:
+      context: .
+      dockerfile: container/Dockerfile
+    image: ${NANOCLAW_AGENT_IMAGE:-nanoclaw-agent}
     restart: unless-stopped
+    user: "app"
+    working_dir: /work
     environment:
-      CONTAINERS: 1
-      IMAGES: 1
-      INFO: 1
-      VERSION: 1
-      PING: 1
-      POST: 1
+      NANOCLAW_AGENT_PORT: 8000
+      NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
+      ONECLI_URL: ${ONECLI_URL:-http://onecli:10255}
+      ONECLI_API_KEY: ${ONECLI_API_KEY:-}
+      NANOCLAW_CWD: /work
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-}
+      GITHUB_REPO_URL: ${GITHUB_REPO_URL:-}
+      USER_CONTEXT_SUBPATH: ${USER_CONTEXT_SUBPATH:-}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${PWD}/runtime/sessions:/runtime/sessions
+      - ${PWD}/runtime/media:/runtime/media:ro
+      - ${PWD}/data/user-context/${USER_CONTEXT_SUBPATH:-}:/work
+      - ${PWD}/CLAUDE.md:/work/CLAUDE.md:ro
+      - ${PWD}/.claude:/work/.claude:ro
+      - onecli-data:/onecli-data:ro
+    expose:
+      - "8000"
+    depends_on:
+      - onecli
 
   postgres:
     image: postgres:16-alpine
@@ -75,6 +87,42 @@ services:
       - "127.0.0.1:10255:10255"
     volumes:
       - onecli-data:/app/data
+
+  git-sync:
+    image: alpine/git
+    restart: unless-stopped
+    volumes:
+      - ${PWD}/data/user-context:/repo
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cd /repo
+        if [ ! -d .git ]; then
+          echo "ERROR: /repo is not a git repository. Clone it on the host first."
+          sleep infinity
+        fi
+        git config user.name "nanoclaw-bot"
+        git config user.email "bot@nanoclaw"
+        while true; do
+          sleep $${GIT_SYNC_INTERVAL_S:-300}
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "auto-sync $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            if [ -n "$${GITHUB_PAT:-}" ] && [ -n "$${GITHUB_REPO_URL:-}" ]; then
+              REPO_NO_SCHEME="$${GITHUB_REPO_URL#https://}"
+              AUTHED_URL="https://$${GITHUB_PAT}@$${REPO_NO_SCHEME}"
+              git pull --rebase "$${AUTHED_URL}" main || git rebase --abort
+              git push "$${AUTHED_URL}" HEAD:main
+            else
+              git pull --rebase || git rebase --abort
+              git push
+            fi
+          fi
+        done
+    environment:
+      GIT_SYNC_INTERVAL_S: ${GIT_SYNC_INTERVAL_S:-300}
+      GITHUB_PAT: ${GITHUB_PAT:-}
+      GITHUB_REPO_URL: ${GITHUB_REPO_URL:-}
 
 volumes:
   onecli-data:
