@@ -26,6 +26,11 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from nanoclaw.dispatch import dispatch as agent_dispatch, load_session_id
 from nanoclaw.loop import run_worker_loop
 from nanoclaw.models import Inbound
+from nanoclaw.scheduler import (
+    ScheduledTask,
+    list_tasks as scheduler_list_tasks,
+    run_scheduler_loop,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,21 @@ def _retry_after_seconds(exc: RetryAfter) -> float:
     if isinstance(ra, int):
         return float(ra)
     return float(ra.total_seconds())
+
+
+def _scheduled_task_confirmation(task_id: str, cron: str, next_run: str) -> str:
+    return (
+        "Scheduled task accepted.\n"
+        f"Task ID: `{task_id}`\n"
+        f"Cron: `{cron}`\n"
+        f"Next run: {next_run}"
+    )
+
+
+def _newly_created_tasks(before: list[ScheduledTask], after: list[ScheduledTask]) -> list[ScheduledTask]:
+    before_ids = {task.id for task in before}
+    created = [task for task in after if task.id not in before_ids]
+    return sorted(created, key=lambda task: task.next_run)
 
 
 async def send_telegram_message(
@@ -193,8 +213,27 @@ def main() -> None:
     bot_ref: list[Bot | None] = [None]
 
     async def handle_batch(batch: list[Inbound]) -> None:
+        before_tasks: list[ScheduledTask] = []
+        try:
+            before_tasks = scheduler_list_tasks()
+        except Exception:
+            logger.exception("Failed to read scheduled tasks before dispatch.")
         try:
             await agent_dispatch(batch, out_queue, session_ref, SESSION_PATH)
+            try:
+                after_tasks = scheduler_list_tasks()
+                created_tasks = _newly_created_tasks(before_tasks, after_tasks)
+                bot = bot_ref[0]
+                if bot is None:
+                    return
+                for task in created_tasks:
+                    await send_telegram_message(
+                        bot,
+                        chat_id=allowed_user_id,
+                        text=_scheduled_task_confirmation(task.id, task.cron, task.next_run),
+                    )
+            except Exception:
+                logger.exception("Failed to send scheduler acceptance confirmation.")
         except Exception:
             logger.exception("Agent dispatch failed")
             bot = bot_ref[0]
@@ -334,6 +373,10 @@ def main() -> None:
             name="nanoclaw-worker",
         )
         asyncio.create_task(send_outbound(application), name="nanoclaw-telegram-sender")
+        asyncio.create_task(
+            run_scheduler_loop(inbound, poll_interval_s=60.0, stop=stop),
+            name="nanoclaw-scheduler",
+        )
 
     async def post_stop(application: Application) -> None:
         stop.set()

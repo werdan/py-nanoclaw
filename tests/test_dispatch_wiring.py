@@ -115,23 +115,31 @@ async def test_dispatch_fails_fast_on_error_status(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_dispatch_does_not_reset_saved_session_on_failure(
+async def test_dispatch_clears_stale_session_and_retries_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Dispatch fail-fast leaves saved session untouched when resume fails."""
+    """Dispatch clears persisted stale session and retries once without resume."""
     out_queue: asyncio.Queue[str] = asyncio.Queue()
     session_ref: list[str | None] = ["stale-session"]
     session_path = tmp_path / "session.txt"
     session_path.write_text("stale-session", encoding="utf-8")
+    calls: list[dict[str, object]] = []
 
     async def fake_run_agent_container(*, payload: dict[str, object], session_path: Path, temp_paths: tuple[Path, ...]):
-        raise RuntimeError("resume initialize failed")
+        calls.append(payload)
+        if payload.get("session_id") == "stale-session":
+            raise RuntimeError("resume initialize failed")
+        return {"status": "success", "session_id": "fresh-session", "result": "recovered"}
 
     monkeypatch.setattr("nanoclaw.dispatch._run_agent_container", fake_run_agent_container)
-    with pytest.raises(RuntimeError, match="resume initialize failed"):
-        await agent_dispatch([Inbound("hello")], out_queue, session_ref, session_path)
-    assert session_ref[0] == "stale-session"
-    assert session_path.read_text(encoding="utf-8").strip() == "stale-session"
+    await agent_dispatch([Inbound("hello")], out_queue, session_ref, session_path)
+    assert calls == [
+        {"prompt": "hello", "session_id": "stale-session"},
+        {"prompt": "hello", "session_id": None},
+    ]
+    assert session_ref[0] == "fresh-session"
+    assert session_path.read_text(encoding="utf-8").strip() == "fresh-session"
+    assert await out_queue.get() == "recovered"
 
 
 @pytest.mark.asyncio
@@ -224,6 +232,26 @@ def test_docker_env_args_legacy_onecli_passthrough_when_proxy_disabled(
     joined = " ".join(args)
     assert "HTTPS_PROXY" not in joined
     assert "ONECLI_API_KEY" in joined
+
+
+def test_project_instruction_volume_args_mounts_claude_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    (project / "runtime" / "sessions").mkdir(parents=True)
+    (project / "CLAUDE.md").write_text("rules", encoding="utf-8")
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("NANOCLAW_DOCKER_HOST_SESSION_DIR", str(project / "runtime" / "sessions"))
+    monkeypatch.delenv("NANOCLAW_DOCKER_HOST_PROJECT_DIR", raising=False)
+
+    mounts = dispatch_mod._project_instruction_volume_args(
+        session_path=Path("/runtime/sessions/.nanoclaw_session")
+    )
+    joined = " ".join(mounts)
+
+    assert f"{project / 'CLAUDE.md'}:/work/CLAUDE.md:ro" in joined
+    assert f"{project / '.claude'}:/work/.claude:ro" in joined
 
 
 def test_onecli_api_base_url_swaps_gateway_port(monkeypatch: pytest.MonkeyPatch) -> None:

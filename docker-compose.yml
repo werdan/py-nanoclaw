@@ -16,6 +16,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       NANOCLAW_AGENT_IMAGE: ${NANOCLAW_AGENT_IMAGE:-nanoclaw-agent}
       NANOCLAW_AGENT_TIMEOUT_S: ${NANOCLAW_AGENT_TIMEOUT_S:-180}
+      NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
       # Isolated network for agent containers (no route to docker-socket-proxy).
       NANOCLAW_DOCKER_NETWORK: ${NANOCLAW_DOCKER_NETWORK:-nanoclaw_agent}
       NANOCLAW_MEDIA_DIR: /runtime/media

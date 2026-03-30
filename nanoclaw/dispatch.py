@@ -26,6 +26,7 @@ _DEFAULT_DOCKER_NETWORK = "nanoclaw_agent"
 _AGENT_CONTAINER_WORKDIR = "/work"
 _DOCKER_HOST_SESSION_DIR_ENV = "NANOCLAW_DOCKER_HOST_SESSION_DIR"
 _DOCKER_HOST_MEDIA_DIR_ENV = "NANOCLAW_DOCKER_HOST_MEDIA_DIR"
+_DOCKER_HOST_PROJECT_DIR_ENV = "NANOCLAW_DOCKER_HOST_PROJECT_DIR"
 _DOCKER_NETWORK_ENV = "NANOCLAW_DOCKER_NETWORK"
 _MEDIA_DIR_ENV = "NANOCLAW_MEDIA_DIR"
 # OneCLI gateway expects Proxy-Authorization: Basic base64("x:{agent_token}"); HTTP clients
@@ -40,6 +41,7 @@ _ONECLI_CA_IN_CONTAINER = "/onecli-data/gateway/ca.pem"
 # Run Claude SDK on the host (no docker agent); use with .env + NANOCLAW_ONECLI_CA_PATH for OneCLI.
 _LOCAL_AGENT_ENV = "NANOCLAW_AGENT_LOCAL"
 _HOST_CA_ENV = "NANOCLAW_ONECLI_CA_PATH"
+_TASKS_PATH_ENV = "NANOCLAW_TASKS_PATH"
 
 
 def _agent_image() -> str:
@@ -257,8 +259,9 @@ async def _run_agent_local(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _docker_env_args(*, onecli_env: dict[str, str] | None = None) -> list[str]:
     args: list[str] = []
-    if "CLAUDE_MODEL" in os.environ:
-        args.extend(["-e", "CLAUDE_MODEL"])
+    for name in ("CLAUDE_MODEL", _TASKS_PATH_ENV):
+        if name in os.environ:
+            args.extend(["-e", name])
     if _use_onecli_http_proxy():
         env_map = onecli_env if onecli_env is not None else _onecli_agent_env_dict()
         for name, value in env_map.items():
@@ -320,6 +323,31 @@ def _docker_volume_args(
     return args
 
 
+def _project_instruction_volume_args(*, session_path: Path) -> list[str]:
+    session_container_dir = session_path.parent.resolve()
+    host_session_dir = Path(
+        os.environ.get(_DOCKER_HOST_SESSION_DIR_ENV, str(session_container_dir))
+    ).resolve()
+
+    host_project_raw = os.environ.get(_DOCKER_HOST_PROJECT_DIR_ENV, "").strip()
+    host_project_dir = Path(host_project_raw).resolve() if host_project_raw else None
+    if host_project_dir is None:
+        # Derive project root from ".../runtime/sessions" when available.
+        if host_session_dir.name == "sessions" and host_session_dir.parent.name == "runtime":
+            host_project_dir = host_session_dir.parent.parent
+        else:
+            return []
+
+    claude_md = host_project_dir / "CLAUDE.md"
+    claude_dir = host_project_dir / ".claude"
+    return [
+        "-v",
+        f"{claude_md}:/work/CLAUDE.md:ro",
+        "-v",
+        f"{claude_dir}:/work/.claude:ro",
+    ]
+
+
 def _log_agent_process_diagnostics(
     *,
     reason: str,
@@ -378,6 +406,7 @@ async def _run_agent_container(
             "1",
             *_docker_env_args(onecli_env=onecli_env),
             *_docker_volume_args(session_path=session_path, temp_paths=temp_paths),
+            *_project_instruction_volume_args(session_path=session_path),
             *onecli_mounts,
             "-w",
             _AGENT_CONTAINER_WORKDIR,
@@ -473,14 +502,31 @@ async def dispatch(
     prompt = "\n".join(msg.content for msg in batch)
     temp_paths = tuple(path for msg in batch for path in msg.temp_paths)
     payload = {"prompt": prompt, "session_id": session_ref[0]}
-    if _agent_local_enabled():
-        result = await _run_agent_local(payload)
-    else:
-        result = await _run_agent_container(
-            payload=payload,
-            session_path=session_path,
-            temp_paths=temp_paths,
-        )
+    try:
+        if _agent_local_enabled():
+            result = await _run_agent_local(payload)
+        else:
+            result = await _run_agent_container(
+                payload=payload,
+                session_path=session_path,
+                temp_paths=temp_paths,
+            )
+    except Exception:
+        if session_ref[0]:
+            logger.warning("Agent resume failed for persisted session; clearing and retrying once.")
+            session_ref[0] = None
+            session_path.unlink(missing_ok=True)
+            payload = {"prompt": prompt, "session_id": None}
+            if _agent_local_enabled():
+                result = await _run_agent_local(payload)
+            else:
+                result = await _run_agent_container(
+                    payload=payload,
+                    session_path=session_path,
+                    temp_paths=temp_paths,
+                )
+        else:
+            raise
     status = result.get("status")
     if status != "success":
         logger.error(

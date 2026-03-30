@@ -75,6 +75,11 @@ docker compose up -d
 - **Voice**: transcribed via OpenAI Whisper, then passed as text.
 - **Images**: saved to a temp directory, mounted into the agent container. The agent uses Claude's `Read` tool to view the image. Temp files are cleaned up after dispatch.
 
+## Scheduler behavior
+
+- When a scheduling task is created, the bot sends an automatic acceptance message with task ID, cron expression, and next run time.
+- The agent should not send a separate task-creation confirmation to avoid duplicate confirmations.
+
 ## Tests
 
 ```bash

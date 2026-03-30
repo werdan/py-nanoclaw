@@ -5,6 +5,8 @@ description = "asyncio inbound queue + file-backed session id for channel/agent 
 requires-python = ">=3.11"
 dependencies = [
     "claude-agent-sdk",
+    "croniter",
+    "mcp",
     "openai",
     "python-dotenv>=1.0",
     "python-telegram-bot>=21.0",
