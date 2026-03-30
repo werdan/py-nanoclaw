@@ -128,11 +128,58 @@ onecli secrets create \
   --host-pattern api.anthropic.com
 ```
 
-## 4) Useful remote commands
+## 4) Deploying code updates
+
+After pushing changes to the git repo, deploy with one command from your laptop:
 
 ```bash
-cd /opt/nanoclaw
-sudo docker compose ps
+gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant --command='
+cd ~/nanoclaw && git pull && sudo docker compose build && sudo docker compose up -d
+'
+```
+
+If you only changed Python code (not Dockerfile or docker-compose.yml), rebuild just the affected services:
+
+```bash
+gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant --command='
+cd ~/nanoclaw && git pull && sudo docker compose build bot agent && sudo docker compose up -d bot agent
+'
+```
+
+If you changed `docker-compose.yml` or `.env.example` only (no image rebuild needed):
+
+```bash
+gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant --command='
+cd ~/nanoclaw && git pull && sudo docker compose up -d
+'
+```
+
+Note: `.env` on the server is gitignored and never overwritten by `git pull`.
+
+## 5) Useful remote commands
+
+```bash
+# SSH into the server
+gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant
+
+# Service status
+cd ~/nanoclaw && sudo docker compose ps
+
+# Live logs (all services)
+sudo docker compose logs -f
+
+# Logs for specific service
 sudo docker compose logs -f bot
+sudo docker compose logs -f agent
 sudo docker compose logs -f onecli
+
+# Restart a service
+sudo docker compose restart bot
+
+# Full restart
+sudo docker compose down && sudo docker compose up -d
+
+# OneCLI dashboard (from laptop, via SSH tunnel)
+gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant -- -L 10254:localhost:10254 -N
+# Then open http://localhost:10254
 ```

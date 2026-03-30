@@ -26,14 +26,10 @@ def test_build_options_sets_default_tasks_path(monkeypatch) -> None:
     assert cfg["env"]["NANOCLAW_TASKS_PATH"] == str(Path.cwd() / ".nanoclaw_tasks.json")
 
 
-def test_build_options_sets_brief_behavior_system_prompt() -> None:
+def test_build_options_uses_project_settings_source() -> None:
     opts = _build_options(None, extra_env={})
     assert opts.setting_sources == ["project"]
     assert opts.cwd is not None
-    claude_md = Path(str(opts.cwd)) / "CLAUDE.md"
-    assert claude_md.exists()
-    text = claude_md.read_text(encoding="utf-8")
-    assert "Reply briefly" in text
 
 
 def test_build_options_does_not_write_claude_md_to_configured_cwd(monkeypatch, tmp_path: Path) -> None:

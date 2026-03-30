@@ -20,7 +20,7 @@ services:
       NANOCLAW_MEDIA_DIR: /runtime/media
       ONECLI_URL: ${ONECLI_URL:-http://onecli:10255}
       ONECLI_API_KEY: ${ONECLI_API_KEY:-}
-      # User context: git repo subpath mounted into /work alongside CLAUDE.md.
+      # User context: git repo subpath mounted into /work.
       GITHUB_REPO_URL: ${GITHUB_REPO_URL:-}
       USER_CONTEXT_SUBPATH: ${USER_CONTEXT_SUBPATH:-}
     depends_on:
@@ -55,7 +55,6 @@ services:
       - ${PWD}/runtime/sessions:/runtime/sessions
       - ${PWD}/runtime/media:/runtime/media:ro
       - ${PWD}/data/user-context/${USER_CONTEXT_SUBPATH:-}:/work
-      - ${PWD}/CLAUDE.md:/work/CLAUDE.md:ro
       - ${PWD}/.claude:/work/.claude:ro
       - onecli-data:/onecli-data:ro
     expose:
