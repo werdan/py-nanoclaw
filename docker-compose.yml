@@ -55,7 +55,7 @@ services:
       - ${PWD}/runtime/sessions:/runtime/sessions
       - ${PWD}/runtime/media:/runtime/media:ro
       - ${PWD}/data/user-context/${USER_CONTEXT_SUBPATH:-}:/work
-      - ${PWD}/.claude:/work/.claude:ro
+      - ${PWD}/.claude:/work/.claude:rw
       - onecli-data:/onecli-data:ro
     expose:
       - "8000"
@@ -107,6 +107,7 @@ services:
           echo "ERROR: /repo is not a git repository. Clone it on the host first."
           sleep infinity
         fi
+        git config --global --add safe.directory /repo
         git config user.name "nanoclaw-bot"
         git config user.email "bot@nanoclaw"
         while true; do
