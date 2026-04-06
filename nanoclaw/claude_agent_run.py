@@ -17,7 +17,7 @@ from claude_agent_sdk import (
     query,
 )
 
-_DEFAULT_MODEL = "claude-sonnet-4-20250514"
+_DEFAULT_MODEL = "claude-sonnet-4-6"
 _TASKS_PATH_ENV = "NANOCLAW_TASKS_PATH"
 _CWD_ENV = "NANOCLAW_CWD"
 def _stderr_line(line: str) -> None:
