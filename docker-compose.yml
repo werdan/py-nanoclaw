@@ -43,6 +43,9 @@ services:
       GITHUB_REPO_URL: ${GITHUB_REPO_URL:-}
       USER_CONTEXT_SUBPATH: ${USER_CONTEXT_SUBPATH:-}
       # OneCLI HTTPS proxy: Claude Code CLI routes API calls through OneCLI gateway.
+      # OAuth (subscription) is preferred; API key is kept as fallback. OneCLI selects
+      # which credential to inject based on the secret stored in its dashboard.
+      CLAUDE_CODE_OAUTH_TOKEN: placeholder
       ANTHROPIC_API_KEY: placeholder
       HTTP_PROXY: http://x:${ONECLI_AGENT_TOKEN:-placeholder}@onecli:10255
       HTTPS_PROXY: http://x:${ONECLI_AGENT_TOKEN:-placeholder}@onecli:10255
