@@ -17,7 +17,8 @@ from claude_agent_sdk import (
     query,
 )
 
-_DEFAULT_MODEL = "sonnet"
+_DEFAULT_MODEL = "claude-opus-4-7"
+_DEFAULT_EFFORT = "high"
 _TASKS_PATH_ENV = "NANOCLAW_TASKS_PATH"
 _CWD_ENV = "NANOCLAW_CWD"
 def _stderr_line(line: str) -> None:
@@ -90,6 +91,7 @@ def _build_options(
     }
     kwargs: dict[str, object] = {
         "model": os.environ.get("CLAUDE_MODEL", _DEFAULT_MODEL),
+        "effort": os.environ.get("CLAUDE_EFFORT", _DEFAULT_EFFORT),
         "permission_mode": "bypassPermissions",
         "stderr": _stderr_line,
         "cwd": str(cwd),
