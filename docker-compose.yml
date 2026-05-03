@@ -7,6 +7,17 @@ services:
     restart: unless-stopped
     user: "app"
     working_dir: /runtime/sessions
+    # Hardened runtime (Tier 1.4): rootfs read-only, all Linux caps dropped,
+    # exec privilege escalation disabled, process count capped. Bind mounts
+    # below stay RW for legitimate state writes.
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    tmpfs:
+      - /tmp
+      - /home/app/.cache
     volumes:
       - ${PWD}/runtime/sessions:/runtime/sessions
       - ${PWD}/runtime/media:/runtime/media
@@ -35,6 +46,19 @@ services:
     restart: unless-stopped
     user: "app"
     working_dir: /work
+    # Hardened runtime (Tier 1.4). The agent is the most-injected surface so
+    # this is the strongest sandbox: rootfs read-only, all caps dropped,
+    # privilege escalation blocked. /work, /runtime/sessions, .claude, and
+    # the OneCLI CA bind mounts below stay writable / readable as needed.
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    tmpfs:
+      - /tmp
+      - /home/app/.cache
+      - /home/app/.claude
     environment:
       NANOCLAW_AGENT_PORT: 8000
       NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
