@@ -194,6 +194,17 @@ def _configure_logging() -> None:
 def main() -> None:
     _configure_logging()
     load_dotenv()
+    # Pull TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, etc. from the OneCLI secret vault
+    # if the dashboard exposes them. Tier 1.1: lets us drop those keys from .env
+    # once they're in OneCLI. Non-destructive — anything already set in os.environ
+    # (from .env or the host) wins, so the migration can roll out gradually.
+    from nanoclaw.onecli_config import apply_to_environ, fetch_env
+    onecli_env = fetch_env()
+    if onecli_env:
+        applied = apply_to_environ(onecli_env)
+        if applied:
+            logger.info("Bootstrapped %d env var(s) from OneCLI: %s", len(applied), sorted(applied))
+
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in the environment or .env")
