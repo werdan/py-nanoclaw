@@ -1,201 +1,131 @@
-# Remote Deployment
+# Day-2 Deployment
 
-> **Post-Tier-0 hardening:** the production VM (`nanoclaw` in `ironclaw-assistant`,
-> zone `europe-west1-b`) no longer accepts SSH from the public internet. SSH only
-> works through Google IAP. The GitHub Actions auto-deploy was disabled — deploys
-> are now manual from your laptop:
->
-> ```bash
-> gcloud compute ssh nanoclaw --tunnel-through-iap \
->     --zone=europe-west1-b --project=ironclaw-assistant \
->     --command='cd ~/nanoclaw && git pull && sudo docker compose build && sudo docker compose up -d'
-> ```
->
-> Same path for the OneCLI dashboard tunnel (use `-- -L 10254:localhost:10254 -N`
-> after the `--tunnel-through-iap` flag instead of `--command`).
+For first-time setup of a fresh VM, see **[BOOTSTRAP.md](BOOTSTRAP.md)**.
+For local Docker development, see **[LOCAL.md](LOCAL.md)**.
 
-To validate everything on your machine with Docker first, see **[LOCAL.md](LOCAL.md)** (`bash ops/local_docker_up.sh`).
+> **Hardened deploy path:** the production VM (`nanoclaw` in `ironclaw-assistant`,
+> zone `europe-west1-b`) accepts SSH only through Google IAP — port 22 is closed
+> to the public internet. The GitHub Actions auto-deploy (`appleboy/ssh-action`)
+> can't reach the VM and is gated behind `workflow_dispatch`. Deploys are run
+> manually from a developer laptop using IAP-tunneled `gcloud compute ssh`.
 
-This project can be deployed to a fresh Ubuntu server with one local command.
-
-## GCP (e.g. project `your-gcp-project`, machine type `e2-small`)
-
-On your laptop, install [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) and sign in:
+## Standard deploy (full rebuild)
 
 ```bash
-gcloud auth login your-email@example.com
-gcloud config set project your-gcp-project
-gcloud config set compute/zone us-central1-a
+gcloud compute ssh nanoclaw --tunnel-through-iap \
+    --zone=europe-west1-b --project=ironclaw-assistant \
+    --command='cd ~/nanoclaw && git pull && sudo docker compose build && sudo docker compose up -d'
 ```
 
-Enable billing and APIs on the project (Compute Engine API), then create the VM:
+## Faster: code-only deploy (no Dockerfile / compose changes)
 
 ```bash
-bash ops/gcp_create_vm.sh
-# or pick zone explicitly:
-# GCP_ZONE=europe-west1-b bash ops/gcp_create_vm.sh
+gcloud compute ssh nanoclaw --tunnel-through-iap \
+    --zone=europe-west1-b --project=ironclaw-assistant \
+    --command='cd ~/nanoclaw && git pull && sudo docker compose build bot agent && sudo docker compose up -d bot agent'
 ```
 
-SSH in (first time `gcloud` adds your key):
+## Compose-only deploy (`docker-compose.yml` / `.env.example` changed, no code)
 
 ```bash
-gcloud compute ssh your-nanoclaw-vm --zone=us-central1-a
+gcloud compute ssh nanoclaw --tunnel-through-iap \
+    --zone=europe-west1-b --project=ironclaw-assistant \
+    --command='cd ~/nanoclaw && git pull && sudo docker compose up -d'
 ```
 
-On the VM, **clone this repo once** (or set `NANOCLAW_GIT_REMOTE` on first deploy so the script clones for you):
+`.env` on the server is gitignored and untouched by `git pull`.
+
+## Switching agent auth: OAuth (subscription) ↔ API key
+
+Claude Code CLI picks auth from env vars and **prefers `ANTHROPIC_API_KEY` over
+`CLAUDE_CODE_OAUTH_TOKEN`** when both are set, so exactly one must be active in
+`docker-compose.yml` (agent service).
+
+**To use OAuth (Claude Pro/Max subscription):**
+1. In `docker-compose.yml` agent env: uncomment `CLAUDE_CODE_OAUTH_TOKEN: placeholder`,
+   comment out `ANTHROPIC_API_KEY: placeholder`.
+2. In OneCLI dashboard (tunnel below): enable the OAuth secret, disable the API key secret.
+3. Deploy via the standard command above; then `sudo docker compose up -d agent` to pick
+   up env changes.
+
+**To use API key (fallback):** flip both — and re-deploy.
+
+**Get a fresh OAuth token:** run `claude setup-token` on your laptop (opens browser,
+prints `sk-ant-oat…` to paste into OneCLI).
+
+**Verify which auth path the CLI is actually using** (from the VM):
 
 ```bash
-sudo mkdir -p /opt && sudo git clone https://github.com/YOU/py-nanoclaw.git /opt/nanoclaw
-sudo chown -R "$USER:$USER" /opt/nanoclaw
+sudo docker compose exec -T agent env | grep -i -E "claude_code_oauth|anthropic_api"
+sudo docker compose exec -T agent /usr/local/lib/python3.13/site-packages/claude_agent_sdk/_bundled/claude --print --output-format json --model sonnet hi
 ```
 
-Then from your laptop, deploy (replace IP with the VM external IP from `gcp_create_vm.sh` output). Code updates are **`git pull` on the server**, not rsync:
+A 401 "Invalid API key" on the second command means the env var in the container doesn't
+match the secret type currently enabled in OneCLI.
+
+## OneCLI dashboard tunnel
 
 ```bash
-bash ops/deploy_remote.sh "$(whoami)@EXTERNAL_IP" /opt/nanoclaw
+gcloud compute ssh nanoclaw --tunnel-through-iap \
+    --zone=europe-west1-b --project=ironclaw-assistant \
+    -- -L 10254:localhost:10254 -N
+# leave running, open http://localhost:10254 in your browser
 ```
 
-Optional: first-time clone from your laptop without SSH git setup:
+## Useful remote commands
 
 ```bash
-NANOCLAW_GIT_REMOTE=https://github.com/YOU/py-nanoclaw.git bash ops/deploy_remote.sh user@EXTERNAL_IP /opt/nanoclaw
-```
-
-Branch defaults to `main`; override with `NANOCLAW_GIT_BRANCH=master`. Legacy rsync: `DEPLOY_SYNC=rsync`. After the first run, edit `.env` on the server if the script created it from `.env.example`, then rerun the deploy command.
-
-## 1) First-time setup + deploy
-
-Ensure the server has a git checkout at the app path (see GCP section above), then from your local machine:
-
-```bash
-bash ops/deploy_remote.sh user@your-server /opt/nanoclaw
-```
-
-The script will:
-- update code on the remote with `git pull` (or clone if `NANOCLAW_GIT_REMOTE` is set)
-- install Docker + Compose plugin on remote
-- create runtime folders
-- create `.env` from `.env.example` if missing
-- start compose (bot, agent, OneCLI, Postgres)
-
-If `.env` is created for the first time, fill it on remote and rerun the deploy command.
-
-## 2) Remote `.env` requirements
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_USER_ID`
-- `OPENAI_API_KEY`
-- `ONECLI_URL` (defaults to `http://onecli:10255` in compose — use this value for Docker; only change if you run OneCLI elsewhere)
-- `ONECLI_API_KEY` — **required after OneCLI onboarding** (dashboard API key used for `/api/container-config`; see §3)
-- `NANOCLAW_ONECLI_API_URL` (optional override; default derives from `ONECLI_URL` by swapping `:10255` to `:10254`)
-- `ONECLI_DB_PASSWORD` (optional; defaults to `onecli` — must match Postgres and stay URL-safe in `DATABASE_URL`)
-
-## 3) OneCLI setup (dashboard + `.env`)
-
-The agent service talks to the OneCLI API to fetch SDK-style container config and apply proxy/CA env. You must create OneCLI credentials/secrets once and put the API key in `.env`.
-
-### Local (Docker on your laptop)
-
-1. Start the stack (`bash ops/local_docker_up.sh` or `docker compose up -d`).
-2. Wait until Postgres and OneCLI are healthy (`docker compose ps`).
-3. Open **http://127.0.0.1:10254** (dashboard). Compose binds these ports to **loopback** only.
-4. In the UI: copy your OneCLI **API key** (`oc_…`) and put it in `.env` as `ONECLI_API_KEY`.
-5. Add an **Anthropic**-type secret in OneCLI for **api.anthropic.com** (see [OneCLI](https://github.com/onecli/onecli)). Nanoclaw sends a **placeholder** API key through the gateway (default `placeholder`; set `NANOCLAW_ANTHROPIC_PLACEHOLDER_KEY` if your rules need another value); OneCLI injects the real key for outbound requests.
-6. In the repo **`.env`** on the machine that runs Compose, set:
-   - `ONECLI_URL=http://onecli:10255`
-   - `ONECLI_API_KEY=<paste the OneCLI API key>`
-7. Recreate the bot so it picks up env: `docker compose up -d bot` (or `docker compose up -d`).
-
-Nanoclaw fetches OneCLI’s SDK container-config (`/api/container-config`) and applies the returned proxy env + CA config in the running agent service. This matches the OneCLI SDK flow ([Node SDK docs](https://www.onecli.sh/docs/sdks/node)).
-
-### Remote server (SSH tunnel)
-
-The dashboard listens on **127.0.0.1** on the server, so your browser cannot reach it by public IP. From your **laptop**:
-
-```bash
-ssh -L 10254:127.0.0.1:10254 -L 10255:127.0.0.1:10255 youruser@REMOTE_IP
-```
-
-Keep that session open, then open **http://localhost:10254** on the laptop. Complete the same steps (API key + Anthropic secret), then put `ONECLI_URL` and `ONECLI_API_KEY` into **`.env` on the server** (e.g. `/opt/nanoclaw/.env`), and restart the stack there:
-
-```bash
-cd /opt/nanoclaw && sudo docker compose up -d
-```
-
-Do not publish `10254`/`10255` on `0.0.0.0` on the public internet without proper authentication and TLS.
-
-### Optional: OneCLI installable CLI
-
-If you use the standalone `onecli` CLI on a host (not required for the Docker dashboard flow):
-
-```bash
-curl -fsSL onecli.sh/install | sh
-```
-
-Example secret creation via CLI (when supported by your version):
-
-```bash
-onecli secrets create \
-  --name Anthropic \
-  --type anthropic \
-  --value "sk-ant-..." \
-  --host-pattern api.anthropic.com
-```
-
-## 4) Deploying code updates
-
-After pushing changes to the git repo, deploy with one command from your laptop:
-
-```bash
-gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant --command='
-cd ~/nanoclaw && git pull && sudo docker compose build && sudo docker compose up -d
-'
-```
-
-If you only changed Python code (not Dockerfile or docker-compose.yml), rebuild just the affected services:
-
-```bash
-gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant --command='
-cd ~/nanoclaw && git pull && sudo docker compose build bot agent && sudo docker compose up -d bot agent
-'
-```
-
-If you changed `docker-compose.yml` or `.env.example` only (no image rebuild needed):
-
-```bash
-gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant --command='
-cd ~/nanoclaw && git pull && sudo docker compose up -d
-'
-```
-
-Note: `.env` on the server is gitignored and never overwritten by `git pull`.
-
-## 5) Useful remote commands
-
-```bash
-# SSH into the server
-gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant
+# Open an interactive shell on the VM
+gcloud compute ssh nanoclaw --tunnel-through-iap \
+    --zone=europe-west1-b --project=ironclaw-assistant
 
 # Service status
 cd ~/nanoclaw && sudo docker compose ps
 
-# Live logs (all services)
-sudo docker compose logs -f
+# Live logs
+sudo docker compose logs -f                # all services
+sudo docker compose logs -f bot agent      # specific services
 
-# Logs for specific service
-sudo docker compose logs -f bot
-sudo docker compose logs -f agent
-sudo docker compose logs -f onecli
-
-# Restart a service
+# Restart one service
 sudo docker compose restart bot
 
 # Full restart
 sudo docker compose down && sudo docker compose up -d
+```
 
-# OneCLI dashboard (from laptop, via IAP-tunneled SSH)
+## Switching gcloud accounts (if you run multiple)
+
+```bash
+# One-off override per command:
 gcloud compute ssh nanoclaw --tunnel-through-iap \
     --zone=europe-west1-b --project=ironclaw-assistant \
-    -- -L 10254:localhost:10254 -N
-# Then open http://localhost:10254
+    --account=samilyak@gmail.com
+
+# Or named gcloud configurations (recommended for two-account workflows):
+gcloud config configurations create personal
+gcloud config set account samilyak@gmail.com
+gcloud config set project ironclaw-assistant
+gcloud config set compute/zone europe-west1-b
+gcloud config configurations activate personal   # flip to this profile
+gcloud config configurations activate default    # flip back
+gcloud config configurations list
 ```
+
+## Updating Google Calendar credentials
+
+The Google OAuth refresh tokens live in
+`~/nanoclaw/runtime/sessions/.nanoclaw_google_creds.json` on the VM (mode `0600`,
+gitignored). To rotate or add an account, regenerate locally and `scp` again:
+
+```bash
+# on your laptop
+.venv/bin/python ops/google_oauth_bootstrap.py \
+    --account work_admin --client-secrets path/to/client_secret_*.json \
+    --creds runtime/sessions/.nanoclaw_google_creds.json
+gcloud compute scp --tunnel-through-iap \
+    --zone=europe-west1-b --project=ironclaw-assistant \
+    runtime/sessions/.nanoclaw_google_creds.json \
+    nanoclaw:nanoclaw/runtime/sessions/.nanoclaw_google_creds.json
+```
+
+The agent picks up the new file on next request — no service restart needed.

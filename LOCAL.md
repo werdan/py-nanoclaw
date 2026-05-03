@@ -11,7 +11,7 @@ cp .env.example .env
 
 ### OneCLI (first time)
 
-After the stack is running once, open **http://127.0.0.1:10254**, add an **Anthropic** secret for **api.anthropic.com**, and copy the OneCLI **API key** (`oc_...`) into `.env` as **`ONECLI_API_KEY`**. Use **`ONECLI_URL=http://onecli:10255`**. Restart **`bot`** (`docker compose up -d bot`). See **[DEPLOY.md](DEPLOY.md)** (section *OneCLI setup*) for remote SSH tunnel instructions.
+After the stack is running once, open **http://127.0.0.1:10254**, add an **Anthropic** secret for **api.anthropic.com**, and copy the OneCLI **API key** (`oc_...`) into `.env` as **`ONECLI_API_KEY`**. Use **`ONECLI_URL=http://onecli:10255`**. Restart **`bot`** (`docker compose up -d bot`). See **[BOOTSTRAP.md](BOOTSTRAP.md)** (step 6 — OneCLI dashboard + secrets) for the IAP-tunneled equivalent on a remote VM.
 
 ## 2) Start stack
 
