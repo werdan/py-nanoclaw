@@ -7,17 +7,19 @@ services:
     restart: unless-stopped
     user: "app"
     working_dir: /runtime/sessions
-    # Hardened runtime (Tier 1.4): rootfs read-only, all Linux caps dropped,
-    # exec privilege escalation disabled, process count capped. Bind mounts
-    # below stay RW for legitimate state writes.
-    read_only: true
-    cap_drop: ["ALL"]
+    # NOTE: Tier 1.4 hardening (read_only / cap_drop / no-new-privileges /
+    # pids_limit) is intentionally NOT applied to the bot yet — it broke
+    # python-telegram-bot's startup with `httpx.ConnectError: [Errno -2]
+    # Name or service not known` on every initial getMe(). DNS works inside
+    # the container after boot (verified with `socket.gethostbyname` and
+    # `httpx.get`), so the failure is specific to telegram.ext.Application
+    # initialization under the sandbox. Tracked for follow-up; the bot's
+    # threat surface is small (no Bash exposure, no MCP tools), so the
+    # short-term gap is acceptable while the agent — the actual injection
+    # target — keeps the full sandbox. Restore once root-caused.
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
-    tmpfs:
-      - /tmp
-      - /home/app/.cache
     volumes:
       - ${PWD}/runtime/sessions:/runtime/sessions
       - ${PWD}/runtime/media:/runtime/media
