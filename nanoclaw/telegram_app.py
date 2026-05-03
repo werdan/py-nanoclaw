@@ -194,12 +194,19 @@ def _configure_logging() -> None:
 def main() -> None:
     _configure_logging()
     load_dotenv()
-    # Pull TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, etc. from the OneCLI secret vault
-    # if the dashboard exposes them. Tier 1.1: lets us drop those keys from .env
-    # once they're in OneCLI. Non-destructive — anything already set in os.environ
-    # (from .env or the host) wins, so the migration can roll out gradually.
+    # Pull just the bot's tokens from the OneCLI secret vault. Tier 1.1: lets us
+    # drop these keys from .env once they're in OneCLI. Non-destructive —
+    # anything already set in os.environ (from .env or the host) wins, so the
+    # migration can roll out gradually.
+    #
+    # Only pull keys the bot actually consumes. OneCLI's container-config
+    # returns agent-targeted entries too (HTTP_PROXY, HTTPS_PROXY,
+    # NODE_EXTRA_CA_CERTS, ANTHROPIC_API_KEY) — applying those to the bot
+    # would re-route Telegram traffic through OneCLI's MITM proxy, which has
+    # no rule for api.telegram.org and breaks startup with EAI_NONAME.
+    _BOT_ONECLI_KEYS = {"TELEGRAM_BOT_TOKEN", "TELEGRAM_USER_ID", "OPENAI_API_KEY"}
     from nanoclaw.onecli_config import apply_to_environ, fetch_env
-    onecli_env = fetch_env()
+    onecli_env = {k: v for k, v in fetch_env().items() if k in _BOT_ONECLI_KEYS}
     if onecli_env:
         applied = apply_to_environ(onecli_env)
         if applied:
