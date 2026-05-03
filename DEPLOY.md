@@ -1,5 +1,19 @@
 # Remote Deployment
 
+> **Post-Tier-0 hardening:** the production VM (`nanoclaw` in `ironclaw-assistant`,
+> zone `europe-west1-b`) no longer accepts SSH from the public internet. SSH only
+> works through Google IAP. The GitHub Actions auto-deploy was disabled — deploys
+> are now manual from your laptop:
+>
+> ```bash
+> gcloud compute ssh nanoclaw --tunnel-through-iap \
+>     --zone=europe-west1-b --project=ironclaw-assistant \
+>     --command='cd ~/nanoclaw && git pull && sudo docker compose build && sudo docker compose up -d'
+> ```
+>
+> Same path for the OneCLI dashboard tunnel (use `-- -L 10254:localhost:10254 -N`
+> after the `--tunnel-through-iap` flag instead of `--command`).
+
 To validate everything on your machine with Docker first, see **[LOCAL.md](LOCAL.md)** (`bash ops/local_docker_up.sh`).
 
 This project can be deployed to a fresh Ubuntu server with one local command.
@@ -179,7 +193,9 @@ sudo docker compose restart bot
 # Full restart
 sudo docker compose down && sudo docker compose up -d
 
-# OneCLI dashboard (from laptop, via SSH tunnel)
-gcloud compute ssh nanoclaw --zone=europe-west1-b --project=ironclaw-assistant -- -L 10254:localhost:10254 -N
+# OneCLI dashboard (from laptop, via IAP-tunneled SSH)
+gcloud compute ssh nanoclaw --tunnel-through-iap \
+    --zone=europe-west1-b --project=ironclaw-assistant \
+    -- -L 10254:localhost:10254 -N
 # Then open http://localhost:10254
 ```

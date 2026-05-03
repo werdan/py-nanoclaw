@@ -1,21 +1,21 @@
 name: Deploy to GCP
 
+# Auto-deploy on push was removed as part of Tier 0 hardening: the VM no
+# longer accepts public SSH (IAP-only), so this workflow can only succeed
+# when triggered manually from a host that holds the deploy SSH key AND
+# can reach the VM through Google IAP. Until that wiring is added (would
+# require Workload Identity Federation + roles/iap.tunnelResourceAccessor
+# on a CI service account), deploy from a developer laptop instead — see
+# DEPLOY.md → "Manual deploy via IAP".
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            cd ~/nanoclaw
-            git pull
-            sudo docker compose build
-            sudo docker compose up -d
+      - name: Manual-deploy reminder
+        run: |
+          echo "::warning::Auto-SSH deploy is disabled. Run the IAP-tunneled deploy from a developer laptop:"
+          echo "::warning::  gcloud compute ssh nanoclaw --tunnel-through-iap --zone=europe-west1-b --project=ironclaw-assistant --command='cd ~/nanoclaw && git pull && sudo docker compose build && sudo docker compose up -d'"
+          exit 1
