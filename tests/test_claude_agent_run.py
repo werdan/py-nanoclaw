@@ -63,3 +63,41 @@ def test_build_options_does_not_write_claude_md_to_configured_cwd(monkeypatch, t
     assert "TaskStop" in settings["permissions"]["deny"]
 
 
+def test_build_options_disallows_dangerous_tools_at_sdk_level(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NANOCLAW_CWD", str(tmp_path))
+    opts = _build_options(None, extra_env={})
+    disallowed = set(opts.disallowed_tools or [])
+    for t in ("Bash", "BashOutput", "WebFetch", "WebSearch", "Task", "KillShell", "NotebookEdit"):
+        assert t in disallowed, f"{t} must be in disallowed_tools"
+
+
+def test_build_options_settings_json_denies_dangerous_tools_and_secret_paths(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NANOCLAW_CWD", str(tmp_path))
+    _build_options(None, extra_env={})
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    deny = set(settings["permissions"]["deny"])
+    # Dangerous tools both in disallowed_tools and in settings deny — defense in depth.
+    assert {"Bash", "WebFetch", "WebSearch", "Task"} <= deny
+    # Cred paths are blocked via Read patterns.
+    assert "Read(/runtime/sessions/**)" in deny
+    assert "Read(/onecli-data/**)" in deny
+
+
+def test_build_options_appends_security_rules_to_system_prompt(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NANOCLAW_CWD", str(tmp_path))
+    opts = _build_options(None, extra_env={})
+    sp = opts.system_prompt
+    # SDK normalizes SystemPromptPreset to a dict on the options dataclass.
+    sp_d = sp if isinstance(sp, dict) else {
+        "type": getattr(sp, "type", None),
+        "preset": getattr(sp, "preset", None),
+        "append": getattr(sp, "append", None),
+    }
+    # Must be the preset-with-append form, not a replaced system prompt.
+    assert sp_d.get("type") == "preset"
+    assert sp_d.get("preset") == "claude_code"
+    appended = sp_d.get("append") or ""
+    assert "UNTRUSTED_INPUT" in appended
+    assert "/runtime/sessions/" in appended
+
+
