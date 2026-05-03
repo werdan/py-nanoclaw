@@ -38,6 +38,7 @@ services:
     environment:
       NANOCLAW_AGENT_PORT: 8000
       NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
+      NANOCLAW_GOOGLE_CREDS_PATH: ${NANOCLAW_GOOGLE_CREDS_PATH:-/runtime/sessions/.nanoclaw_google_creds.json}
       NANOCLAW_CWD: /work
       CLAUDE_MODEL: ${CLAUDE_MODEL:-}
       GITHUB_REPO_URL: ${GITHUB_REPO_URL:-}

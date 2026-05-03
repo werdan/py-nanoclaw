@@ -21,6 +21,7 @@ _DEFAULT_MODEL = "claude-opus-4-7"
 _DEFAULT_EFFORT = "high"
 _TASKS_PATH_ENV = "NANOCLAW_TASKS_PATH"
 _CWD_ENV = "NANOCLAW_CWD"
+_GOOGLE_CREDS_PATH_ENV = "NANOCLAW_GOOGLE_CREDS_PATH"
 def _stderr_line(line: str) -> None:
     """Forward Claude Code CLI stderr so logs show the real error (SDK hides it otherwise)."""
     print(line, file=sys.stderr, flush=True)
@@ -79,6 +80,9 @@ def _build_options(
 ) -> ClaudeAgentOptions:
     env: dict[str, str] = dict(extra_env or {})
     tasks_path = os.environ.get(_TASKS_PATH_ENV, str(Path.cwd() / ".nanoclaw_tasks.json"))
+    google_creds_path = os.environ.get(
+        _GOOGLE_CREDS_PATH_ENV, str(Path.cwd() / ".nanoclaw_google_creds.json")
+    )
     cwd = _resolve_agent_cwd()
     _write_project_settings_json(cwd)
     mcp_servers: dict[str, object] = {
@@ -87,7 +91,13 @@ def _build_options(
             "command": sys.executable,
             "args": ["-m", "nanoclaw.mcp_server"],
             "env": {_TASKS_PATH_ENV: tasks_path},
-        }
+        },
+        "calendar": {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["-m", "nanoclaw.calendar_mcp"],
+            "env": {_GOOGLE_CREDS_PATH_ENV: google_creds_path},
+        },
     }
     kwargs: dict[str, object] = {
         "model": os.environ.get("CLAUDE_MODEL", _DEFAULT_MODEL),

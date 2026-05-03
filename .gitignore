@@ -8,3 +8,6 @@ __pycache__/
 dist/
 build/
 ops/gcp_create_vm.sh
+client_secret*.json
+runtime/sessions/.nanoclaw_google_creds*
+runtime/sessions/.google_oauth_*

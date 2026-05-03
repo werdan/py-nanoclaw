@@ -26,6 +26,25 @@ def test_build_options_sets_default_tasks_path(monkeypatch) -> None:
     assert cfg["env"]["NANOCLAW_TASKS_PATH"] == str(Path.cwd() / ".nanoclaw_tasks.json")
 
 
+def test_build_options_includes_calendar_mcp(monkeypatch) -> None:
+    monkeypatch.setenv("NANOCLAW_GOOGLE_CREDS_PATH", "/tmp/google-creds.json")
+    opts = _build_options(None, extra_env={})
+
+    assert "calendar" in opts.mcp_servers
+    cfg = opts.mcp_servers["calendar"]
+    assert cfg["args"] == ["-m", "nanoclaw.calendar_mcp"]
+    assert cfg["env"]["NANOCLAW_GOOGLE_CREDS_PATH"] == "/tmp/google-creds.json"
+
+
+def test_build_options_calendar_mcp_default_path(monkeypatch) -> None:
+    monkeypatch.delenv("NANOCLAW_GOOGLE_CREDS_PATH", raising=False)
+    opts = _build_options(None, extra_env={})
+    cfg = opts.mcp_servers["calendar"]
+    assert cfg["env"]["NANOCLAW_GOOGLE_CREDS_PATH"] == str(
+        Path.cwd() / ".nanoclaw_google_creds.json"
+    )
+
+
 def test_build_options_uses_project_settings_source() -> None:
     opts = _build_options(None, extra_env={})
     assert opts.setting_sources == ["project"]
