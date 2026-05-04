@@ -166,9 +166,14 @@ def _serve(sock_path: str, dispatch: Callable[[dict[str, Any]], dict[str, Any]])
     except FileNotFoundError:
         pass
     server = _ThreadedUnixServer(sock_path, _make_handler(dispatch))
-    # 0o660: broker UID (owner) + group readable. The mounted-into-consumer
-    # container provides the actual access boundary; mode is belt-and-suspenders.
-    os.chmod(sock_path, 0o660)
+    # 0o666 — the security boundary is the per-consumer bind mount, not the
+    # socket file's permissions: the bot's container only has bot-creds bound
+    # in, and vice versa, so an unrelated UID can never reach this socket.
+    # We can't use 0o660 + a shared group because consumer containers (bot,
+    # agent) currently share an `app` UID (999) that's outside this broker
+    # container's user database, and adding bot/agent to broker's group
+    # would require Tier 1.2 UID-compartmentalization first.
+    os.chmod(sock_path, 0o666)
     t = threading.Thread(target=server.serve_forever, daemon=True, name=f"broker-{p.name}")
     t.start()
     logger.info("broker listening on %s", sock_path)
