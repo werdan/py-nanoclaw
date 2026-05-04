@@ -23,16 +23,24 @@ services:
     volumes:
       - ${PWD}/runtime/sessions:/runtime/sessions
       - ${PWD}/runtime/media:/runtime/media
+      # CA cert for the OneCLI HTTPS proxy (used only by the OpenAI client;
+      # Telegram client still goes direct, see nanoclaw/openai_client.py).
+      - onecli-data:/onecli-data:ro
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_USER_ID: ${TELEGRAM_USER_ID}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # OPENAI_API_KEY intentionally NOT set: bot constructs its OpenAI
+      # client through the OneCLI proxy (Tier 1.1 follow-up). OneCLI injects
+      # the real key on outbound api.openai.com requests. The .env can keep
+      # OPENAI_API_KEY as a local-dev fallback if you don't run OneCLI.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       NANOCLAW_AGENT_URL: ${NANOCLAW_AGENT_URL:-http://agent:8000/message}
       NANOCLAW_AGENT_TIMEOUT_S: ${NANOCLAW_AGENT_TIMEOUT_S:-180}
       NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
       NANOCLAW_MEDIA_DIR: /runtime/media
       ONECLI_URL: ${ONECLI_URL:-http://onecli:10255}
       ONECLI_API_KEY: ${ONECLI_API_KEY:-}
+      ONECLI_AGENT_TOKEN: ${ONECLI_AGENT_TOKEN:-}
       # User context: git repo subpath mounted into /work.
       GITHUB_REPO_URL: ${GITHUB_REPO_URL:-}
       USER_CONTEXT_SUBPATH: ${USER_CONTEXT_SUBPATH:-}

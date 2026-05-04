@@ -204,7 +204,7 @@ def main() -> None:
     # NODE_EXTRA_CA_CERTS, ANTHROPIC_API_KEY) — applying those to the bot
     # would re-route Telegram traffic through OneCLI's MITM proxy, which has
     # no rule for api.telegram.org and breaks startup with EAI_NONAME.
-    _BOT_ONECLI_KEYS = {"TELEGRAM_BOT_TOKEN", "TELEGRAM_USER_ID", "OPENAI_API_KEY"}
+    _BOT_ONECLI_KEYS = {"TELEGRAM_BOT_TOKEN", "TELEGRAM_USER_ID"}
     from nanoclaw.onecli_config import apply_to_environ, fetch_env
     onecli_env = {k: v for k, v in fetch_env().items() if k in _BOT_ONECLI_KEYS}
     if onecli_env:
@@ -217,10 +217,11 @@ def main() -> None:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in the environment or .env")
 
     allowed_user_id = _required_user_id()
-    openai_api_key = os.environ.get("OPENAI_API_KEY")
-    openai_client = AsyncOpenAI(api_key=openai_api_key) if openai_api_key else None
-    if openai_client is None:
-        logger.warning("OPENAI_API_KEY is not set; voice transcription is disabled.")
+    # OpenAI client routes through OneCLI when possible — real key never
+    # touches the bot process. Falls back to OPENAI_API_KEY in env for local
+    # dev. See nanoclaw/openai_client.py.
+    from nanoclaw.openai_client import build_async_openai_client
+    openai_client = build_async_openai_client()
 
     inbound: asyncio.Queue[Inbound] = asyncio.Queue()
     out_queue: asyncio.Queue[str] = asyncio.Queue()
