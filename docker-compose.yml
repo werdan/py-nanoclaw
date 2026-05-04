@@ -27,8 +27,8 @@ services:
       # Telegram client still goes direct, see nanoclaw/openai_client.py).
       - onecli-data:/onecli-data:ro
       # Tier 1.3: per-consumer creds-broker socket. Bot can call only the bot
-      # ops; the agent gets a separate socket on a different volume.
-      - bot-creds-socket:/run/creds:rw
+      # ops; the agent gets a separate socket directory.
+      - ${PWD}/runtime/bot-creds:/run/creds:rw
     environment:
       # TELEGRAM_BOT_TOKEN is read from the creds-broker socket below; this env
       # var is only used as a local-dev fallback if NANOCLAW_BOT_BROKER_SOCKET
@@ -114,10 +114,10 @@ services:
       - ${PWD}/data/user-context/${USER_CONTEXT_SUBPATH:-}:/work
       - ${PWD}/.claude:/work/.claude:rw
       - onecli-data:/onecli-data:ro
-      # Tier 1.3: agent's per-consumer creds-broker socket. Distinct volume
+      # Tier 1.3: agent's per-consumer creds-broker socket. Distinct dir
       # from bot's so a compromised agent cannot ask the broker for the
       # Telegram bot token (op denied at the bot socket only).
-      - agent-creds-socket:/run/creds:rw
+      - ${PWD}/runtime/agent-creds:/run/creds:rw
     expose:
       - "8000"
     depends_on:
@@ -150,10 +150,10 @@ services:
       # here as `secrets/google-oauth-creds.json` and add a one-line
       # `secrets/telegram-bot-token` file.
       - ${PWD}/secrets:/secrets:ro
-      # Per-consumer sockets — broker creates one socket on each volume,
-      # consumers mount only their corresponding volume.
-      - agent-creds-socket:/run/agent-creds
-      - bot-creds-socket:/run/bot-creds
+      # Per-consumer sockets — broker creates one socket in each dir,
+      # consumers bind-mount the same dir at /run/creds in their container.
+      - ${PWD}/runtime/agent-creds:/run/agent-creds
+      - ${PWD}/runtime/bot-creds:/run/bot-creds
     expose: []
 
   postgres:
@@ -228,11 +228,6 @@ services:
 volumes:
   onecli-data:
   pgdata:
-  # Tier 1.3 per-consumer creds-broker sockets. Each is an empty named volume
-  # the broker mounts RW (creates a socket file inside) and the corresponding
-  # consumer (bot or agent) mounts the same volume to find that socket.
-  agent-creds-socket:
-  bot-creds-socket:
 
 networks:
   agent:
