@@ -67,8 +67,13 @@ services:
     pids_limit: 256
     tmpfs:
       - /tmp
-      - /home/app/.cache
-      - /home/app/.claude
+      # Cover all of HOME — the bundled Claude Code CLI (bun runtime) writes
+      # to several paths under $HOME (.config, .local, debug logs) that we
+      # can't enumerate up front. Granular .cache + .claude tmpfs wasn't
+      # enough; CLI hung silently on appendFileSync ENOENT to a path we
+      # hadn't covered. mode=1777 + sticky bit so the unprivileged `app` UID
+      # can write here even though tmpfs roots are root-owned by default.
+      - /home/app:mode=1777
     environment:
       NANOCLAW_AGENT_PORT: 8000
       NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
