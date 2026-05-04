@@ -12,8 +12,16 @@ def _make_service(events_return=None, calendars_return=None, freebusy_return=Non
     svc = MagicMock()
     if events_return is not None:
         svc.events.return_value.list.return_value.execute.return_value = events_return
-    if calendars_return is not None:
-        svc.calendarList.return_value.list.return_value.execute.return_value = calendars_return
+    # Default calendarList: a single owner-role primary calendar. Tests that need
+    # subcalendars override via ``calendars_return``. Without this default, the
+    # code paths that pre-flight calendarList (find_free_slots, list_events,
+    # list_calendars) would crash on un-stubbed MagicMock returns.
+    default_cals = {"items": [
+        {"id": "primary", "summary": "Me", "primary": True, "accessRole": "owner"}
+    ]}
+    svc.calendarList.return_value.list.return_value.execute.return_value = (
+        calendars_return if calendars_return is not None else default_cals
+    )
     if freebusy_return is not None:
         svc.freebusy.return_value.query.return_value.execute.return_value = freebusy_return
     if insert_return is not None:
@@ -23,37 +31,67 @@ def _make_service(events_return=None, calendars_return=None, freebusy_return=Non
     return svc
 
 
-def test_list_calendars_merges_across_accounts(monkeypatch) -> None:
+def _svc_with_calendars_then_events(cal_items, events_per_calendar):
+    """Build a service whose calendarList returns ``cal_items`` and whose
+    events.list returns the right items per calendarId based on
+    ``events_per_calendar`` (cal_id -> [event_dict, ...])."""
+    svc = MagicMock()
+    svc.calendarList.return_value.list.return_value.execute.return_value = {"items": cal_items}
+
+    def _events_list(**kwargs):
+        cal_id = kwargs["calendarId"]
+        result = MagicMock()
+        result.execute.return_value = {"items": events_per_calendar.get(cal_id, [])}
+        return result
+
+    svc.events.return_value.list.side_effect = _events_list
+    return svc
+
+
+def test_list_calendars_includes_all_subcalendars_by_default(monkeypatch) -> None:
     services = {
         "personal": _make_service(calendars_return={
-            "items": [{"id": "primary", "summary": "Me", "primary": True,
-                       "timeZone": "Europe/Kiev", "accessRole": "owner"}],
-        }),
-        "work_admin": _make_service(calendars_return={
-            "items": [{"id": "team@example.com", "summary": "Team",
-                       "timeZone": "UTC", "accessRole": "reader"}],
+            "items": [
+                {"id": "primary", "summary": "Me", "primary": True, "accessRole": "owner"},
+                {"id": "family", "summary": "Family", "accessRole": "owner"},
+                {"id": "holidays", "summary": "Holidays", "accessRole": "reader"},
+            ],
         }),
     }
-    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal", "work_admin"])
+    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal"])
     monkeypatch.setattr(cm, "_service", lambda account: services[account])
 
-    result = cm.list_calendars()
+    result = cm.list_calendars()  # default include_read_only=True
 
-    assert result["errors"] == []
-    cals = result["calendars"]
-    assert len(cals) == 2
-    # Each entry must carry its source account so the agent knows where it came from.
-    by_acct = {c["account"]: c for c in cals}
-    assert by_acct["personal"]["id"] == "primary"
-    assert by_acct["personal"]["primary"] is True
-    assert by_acct["work_admin"]["id"] == "team@example.com"
-    assert by_acct["work_admin"]["primary"] is False
+    ids = sorted(c["id"] for c in result["calendars"])
+    assert ids == ["family", "holidays", "primary"]
+    assert all(c["account"] == "personal" for c in result["calendars"])
+
+
+def test_list_calendars_can_filter_to_writable_only(monkeypatch) -> None:
+    services = {
+        "personal": _make_service(calendars_return={
+            "items": [
+                {"id": "primary", "summary": "Me", "accessRole": "owner"},
+                {"id": "family", "summary": "Family", "accessRole": "writer"},
+                {"id": "holidays", "summary": "Holidays", "accessRole": "reader"},
+                {"id": "world-cup", "summary": "World Cup", "accessRole": "freeBusyReader"},
+            ],
+        }),
+    }
+    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal"])
+    monkeypatch.setattr(cm, "_service", lambda account: services[account])
+
+    result = cm.list_calendars(include_read_only=False)
+
+    ids = sorted(c["id"] for c in result["calendars"])
+    assert ids == ["family", "primary"]
 
 
 def test_list_calendars_surfaces_per_account_errors(monkeypatch) -> None:
     services = {
         "personal": _make_service(calendars_return={"items": [
-            {"id": "primary", "summary": "Me", "primary": True}]}),
+            {"id": "primary", "summary": "Me", "primary": True, "accessRole": "owner"}]}),
         "work_admin": MagicMock(),
     }
     services["work_admin"].calendarList.return_value.list.return_value.execute.side_effect = (
@@ -69,75 +107,79 @@ def test_list_calendars_surfaces_per_account_errors(monkeypatch) -> None:
     assert result["errors"] == [{"account": "work_admin", "error": "RuntimeError: bad credentials"}]
 
 
-def test_list_events_queries_every_account_primary_calendar(monkeypatch) -> None:
-    calls: dict[str, dict[str, Any]] = {}
-
-    def make_svc(account: str):
-        svc = MagicMock()
-        def _capture(**kw):
-            calls[account] = kw
-            inner = MagicMock()
-            inner.execute.return_value = {"items": []}
-            return inner
-        svc.events.return_value.list.side_effect = _capture
-        return svc
-
-    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal", "work_admin"])
-    monkeypatch.setattr(cm, "_service", lambda account: make_svc(account))
-
-    cm.list_events(
-        time_min="2026-05-04T00:00:00Z",
-        time_max="2026-05-05T00:00:00Z",
-        q="standup",
-        max_results_per_account=10,
-    )
-
-    assert set(calls.keys()) == {"personal", "work_admin"}
-    for acct, kw in calls.items():
-        assert kw["calendarId"] == "primary"
-        assert kw["timeMin"] == "2026-05-04T00:00:00Z"
-        assert kw["timeMax"] == "2026-05-05T00:00:00Z"
-        assert kw["singleEvents"] is True
-        assert kw["orderBy"] == "startTime"
-        assert kw["maxResults"] == 10
-        assert kw["q"] == "standup"
-
-
-def test_list_events_merges_and_sorts_by_start(monkeypatch) -> None:
+def test_list_events_queries_every_subcalendar_per_account(monkeypatch) -> None:
+    """Subcalendars within each account must each get their own events.list call;
+    events are tagged with the originating calendar id + summary."""
     services = {
-        "personal": _make_service(events_return={"items": [
-            {"id": "p1", "summary": "Lunch",
-             "start": {"dateTime": "2026-05-04T12:00:00Z"},
-             "end": {"dateTime": "2026-05-04T13:00:00Z"}},
-        ]}),
-        "work_admin": _make_service(events_return={"items": [
-            {"id": "w1", "summary": "Standup",
-             "start": {"dateTime": "2026-05-04T09:00:00Z"},
-             "end": {"dateTime": "2026-05-04T09:15:00Z"}},
-            {"id": "w2", "summary": "Planning",
-             "start": {"dateTime": "2026-05-04T15:00:00Z"},
-             "end": {"dateTime": "2026-05-04T16:00:00Z"}},
-        ]}),
+        "personal": _svc_with_calendars_then_events(
+            cal_items=[
+                {"id": "primary", "summary": "Me", "primary": True, "accessRole": "owner"},
+                {"id": "family", "summary": "Family", "accessRole": "writer"},
+                {"id": "holidays", "summary": "Holidays", "accessRole": "reader"},  # excluded
+            ],
+            events_per_calendar={
+                "primary": [{"id": "e1", "summary": "Doctor",
+                              "start": {"dateTime": "2026-05-04T10:00:00Z"},
+                              "end":   {"dateTime": "2026-05-04T11:00:00Z"}}],
+                "family": [{"id": "e2", "summary": "Birthday",
+                             "start": {"dateTime": "2026-05-04T18:00:00Z"},
+                             "end":   {"dateTime": "2026-05-04T20:00:00Z"}}],
+            },
+        ),
     }
-    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal", "work_admin"])
+    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal"])
     monkeypatch.setattr(cm, "_service", lambda account: services[account])
 
     result = cm.list_events(
-        time_min="2026-05-04T00:00:00Z", time_max="2026-05-05T00:00:00Z",
+        time_min="2026-05-04T00:00:00Z", time_max="2026-05-05T00:00:00Z"
     )
 
     assert result["errors"] == []
     events = result["events"]
-    assert [e["id"] for e in events] == ["w1", "p1", "w2"]  # sorted by start time
-    # Each carries its source account, plus content fields are still fenced.
-    assert events[0]["account"] == "work_admin"
-    assert events[0]["summary"] == '<UNTRUSTED_INPUT source="google-calendar">Standup</UNTRUSTED_INPUT>'
-    assert events[1]["account"] == "personal"
-    assert events[2]["account"] == "work_admin"
+    assert [e["id"] for e in events] == ["e1", "e2"]  # sorted by start
+    # Each event tagged with its source subcalendar + account.
+    by_id = {e["id"]: e for e in events}
+    assert by_id["e1"]["account"] == "personal"
+    assert by_id["e1"]["calendar_id"] == "primary"
+    assert by_id["e1"]["calendar_summary"] == "Me"
+    assert by_id["e2"]["calendar_id"] == "family"
+    assert by_id["e2"]["calendar_summary"] == "Family"
+    # Holidays calendar (reader) is NOT queried — only its 2 calendar entries
+    # were eligible.
+    assert services["personal"].events.return_value.list.call_count == 2
+
+
+def test_list_events_include_read_only_widens_to_subscribed_calendars(monkeypatch) -> None:
+    services = {
+        "personal": _svc_with_calendars_then_events(
+            cal_items=[
+                {"id": "primary", "summary": "Me", "accessRole": "owner"},
+                {"id": "holidays", "summary": "Holidays", "accessRole": "reader"},
+            ],
+            events_per_calendar={
+                "primary": [],
+                "holidays": [{"id": "h1", "summary": "May Day",
+                               "start": {"dateTime": "2026-05-01T00:00:00Z"},
+                               "end":   {"dateTime": "2026-05-02T00:00:00Z"}}],
+            },
+        ),
+    }
+    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal"])
+    monkeypatch.setattr(cm, "_service", lambda account: services[account])
+
+    r = cm.list_events(
+        time_min="2026-04-30T00:00:00Z", time_max="2026-05-05T00:00:00Z",
+        include_read_only=True,
+    )
+    ids = [e["id"] for e in r["events"]]
+    assert "h1" in ids
 
 
 def test_list_events_omits_q_when_none(monkeypatch) -> None:
-    svc = _make_service(events_return={"items": []})
+    svc = _svc_with_calendars_then_events(
+        cal_items=[{"id": "primary", "summary": "Me", "accessRole": "owner"}],
+        events_per_calendar={"primary": []},
+    )
     monkeypatch.setattr(cm, "list_accounts", lambda: ["personal"])
     monkeypatch.setattr(cm, "_service", lambda account: svc)
 
@@ -147,24 +189,53 @@ def test_list_events_omits_q_when_none(monkeypatch) -> None:
     assert "q" not in kwargs
 
 
-def test_list_events_per_account_failure_surfaces_as_soft_error(monkeypatch) -> None:
-    ok_svc = _make_service(events_return={"items": [
-        {"id": "p1", "summary": "Lunch",
-         "start": {"dateTime": "2026-05-04T12:00:00Z"},
-         "end": {"dateTime": "2026-05-04T13:00:00Z"}},
-    ]})
-    fail_svc = MagicMock()
-    fail_svc.events.return_value.list.return_value.execute.side_effect = RuntimeError("token expired")
+def test_list_events_per_calendar_failure_surfaces_as_soft_error(monkeypatch) -> None:
+    """A failure on one subcalendar must not block the rest, and the error
+    record carries both account and calendar id."""
+    svc = MagicMock()
+    svc.calendarList.return_value.list.return_value.execute.return_value = {
+        "items": [
+            {"id": "primary", "summary": "Me", "accessRole": "owner"},
+            {"id": "family", "summary": "Family", "accessRole": "writer"},
+        ]
+    }
 
-    services = {"personal": ok_svc, "work_admin": fail_svc}
-    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal", "work_admin"])
-    monkeypatch.setattr(cm, "_service", lambda account: services[account])
+    def _events_list(**kwargs):
+        result = MagicMock()
+        if kwargs["calendarId"] == "family":
+            result.execute.side_effect = RuntimeError("calendar deleted")
+        else:
+            result.execute.return_value = {"items": [{
+                "id": "p1", "summary": "Doctor",
+                "start": {"dateTime": "2026-05-04T10:00:00Z"},
+                "end":   {"dateTime": "2026-05-04T11:00:00Z"},
+            }]}
+        return result
 
-    result = cm.list_events(time_min="2026-05-04T00:00:00Z", time_max="2026-05-05T00:00:00Z")
+    svc.events.return_value.list.side_effect = _events_list
+    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal"])
+    monkeypatch.setattr(cm, "_service", lambda account: svc)
 
-    assert len(result["events"]) == 1
-    assert result["events"][0]["account"] == "personal"
-    assert result["errors"] == [{"account": "work_admin", "error": "RuntimeError: token expired"}]
+    r = cm.list_events(time_min="2026-05-04T00:00:00Z", time_max="2026-05-05T00:00:00Z")
+    assert len(r["events"]) == 1
+    assert r["events"][0]["calendar_id"] == "primary"
+    assert len(r["errors"]) == 1
+    assert r["errors"][0]["calendar_id"] == "family"
+    assert r["errors"][0]["account"] == "personal"
+    assert "calendar deleted" in r["errors"][0]["error"]
+
+
+def test_list_events_calendar_list_failure_surfaces_at_account_level(monkeypatch) -> None:
+    svc = MagicMock()
+    svc.calendarList.return_value.list.return_value.execute.side_effect = RuntimeError("auth")
+    monkeypatch.setattr(cm, "list_accounts", lambda: ["personal"])
+    monkeypatch.setattr(cm, "_service", lambda account: svc)
+
+    r = cm.list_events(time_min="2026-05-04T00:00:00Z", time_max="2026-05-05T00:00:00Z")
+    assert r["events"] == []
+    assert r["errors"] == [{
+        "account": "personal", "stage": "calendarList", "error": "RuntimeError: auth",
+    }]
 
 
 def test_create_event_builds_minimal_body(monkeypatch) -> None:

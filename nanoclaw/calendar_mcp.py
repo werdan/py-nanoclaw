@@ -36,6 +36,35 @@ def _service(account: str):
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
+_OWNED_ROLES: frozenset[str] = frozenset({"owner", "writer"})
+_READ_ROLES: frozenset[str] = frozenset({"reader", "freeBusyReader"})
+
+
+def _account_calendar_list(account: str) -> list[dict[str, Any]]:
+    """Fetch the raw calendarList for one account (id + summary + accessRole)."""
+    svc = _service(account)
+    items = svc.calendarList().list().execute().get("items", []) or []
+    return [
+        {
+            "id": it.get("id"),
+            "summary": it.get("summary"),
+            "primary": bool(it.get("primary")),
+            "access_role": it.get("accessRole"),
+            "timezone": it.get("timeZone"),
+        }
+        for it in items
+    ]
+
+
+def _filter_calendars_by_role(
+    cals: list[dict[str, Any]], *, include_read_only: bool
+) -> list[dict[str, Any]]:
+    allowed = set(_OWNED_ROLES)
+    if include_read_only:
+        allowed |= _READ_ROLES
+    return [c for c in cals if c.get("access_role") in allowed]
+
+
 def _fence(value: str | None) -> str | None:
     """Wrap an externally-authored string field in <UNTRUSTED_INPUT> markers.
 
@@ -78,35 +107,36 @@ def list_configured_accounts() -> list[str]:
 
 
 @mcp.tool()
-def list_calendars() -> dict[str, Any]:
-    """List calendars across **all** configured Google accounts.
+def list_calendars(include_read_only: bool = True) -> dict[str, Any]:
+    """List calendars across **all** configured Google accounts and **all**
+    subcalendars within each account.
 
-    Each entry includes the originating account so the agent can tell which
-    calendar belongs to which account when needed. Read operations should
-    treat the user's calendar as a single unified whole — there's no reason
-    to ask the user "which account?" for read questions.
+    Each entry carries:
+      - ``account`` — which Google account the calendar belongs to
+      - ``id``, ``summary`` — the Google calendar identifier and label
+      - ``primary`` — whether this is the account's main calendar
+      - ``access_role`` — owner / writer / reader / freeBusyReader
+
+    By default returns *every* calendar the user has access to (including
+    subscribed read-only ones like national holidays). Pass
+    ``include_read_only=False`` to restrict to calendars the user owns or
+    can write to — useful when the read-only ones are noisy.
 
     Returns ``{"calendars": [...], "errors": [{"account": ..., "error": ...}]}``.
-    Per-account failures are surfaced as soft errors so partial results still
-    come through.
     """
     accounts = list_accounts()
     out: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for account in accounts:
         try:
-            svc = _service(account)
-            for it in svc.calendarList().list().execute().get("items", []) or []:
-                out.append({
-                    "account": account,
-                    "id": it.get("id"),
-                    "summary": it.get("summary"),
-                    "primary": bool(it.get("primary")),
-                    "timezone": it.get("timeZone"),
-                    "access_role": it.get("accessRole"),
-                })
-        except Exception as exc:  # noqa: BLE001 — surface per-account failures
+            cals = _account_calendar_list(account)
+        except Exception as exc:  # noqa: BLE001
             errors.append({"account": account, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if not include_read_only:
+            cals = _filter_calendars_by_role(cals, include_read_only=False)
+        for c in cals:
+            out.append({"account": account, **c})
     return {"calendars": out, "errors": errors}
 
 
@@ -115,49 +145,84 @@ def list_events(
     time_min: str,
     time_max: str,
     q: str | None = None,
-    max_results_per_account: int = 50,
+    max_results_per_calendar: int = 50,
+    include_read_only: bool = False,
 ) -> dict[str, Any]:
-    """List events across **all** configured Google accounts in one call.
+    """List events across **all** configured Google accounts and **all**
+    subcalendars within each account.
 
     The user's calendar is one unified whole — this tool merges events from
-    every connected Google account (``personal``, ``work_admin``, ``work_corp``)
-    and returns them sorted by start time. Each event carries an ``account``
-    field so you can mention the source when relevant; otherwise treat the
-    set as the user's single calendar.
+    every connected account (``personal``, ``work_admin``, ``work_corp``) and
+    every subcalendar inside each account (Family, side-projects, etc.). Each
+    event carries:
 
-    ``time_min`` / ``time_max`` are RFC3339 timestamps (e.g. ``2026-05-04T00:00:00Z``).
-    ``q`` is an optional free-text search filter. Recurring events are expanded.
-    Each account's primary calendar is queried; ``max_results_per_account`` caps
-    the per-account fetch (the merged list can have up to N × num_accounts).
+      - ``account`` — Google account it lives under
+      - ``calendar_id`` — the originating subcalendar ID
+      - ``calendar_summary`` — the human-readable subcalendar name
+      - ``summary``, ``description``, ``location`` — fenced as ``UNTRUSTED_INPUT``
 
-    Returns ``{"events": [...], "errors": [...]}`` — a per-account error doesn't
-    abort the others.
+    The merged list is sorted by start time. Mention the source calendar when
+    it adds context (e.g. "Tuesday's Standup is on your work calendar; lunch
+    is on your personal Family calendar"); otherwise treat the events as one
+    unified schedule.
+
+    ``time_min`` / ``time_max`` are RFC3339 timestamps. ``q`` is a free-text
+    filter applied per calendar. Recurring events are expanded.
+
+    By default reads only calendars the user owns or can write to — skips
+    subscribed read-only calendars (holidays, sports, shared booking calendars)
+    that would add noise. Pass ``include_read_only=True`` to include them.
+
+    Returns ``{"events": [...], "errors": [...]}``. Per-calendar failures are
+    surfaced as soft errors with both ``account`` and ``calendar_id`` so a
+    single misconfigured calendar doesn't block the rest.
     """
     accounts = list_accounts()
     all_events: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
+    errors: list[dict[str, Any]] = []
+
     for account in accounts:
         try:
-            svc = _service(account)
-            kwargs: dict[str, Any] = {
-                "calendarId": "primary",
-                "timeMin": time_min,
-                "timeMax": time_max,
-                "singleEvents": True,
-                "orderBy": "startTime",
-                "maxResults": max_results_per_account,
-            }
-            if q:
-                kwargs["q"] = q
-            resp = svc.events().list(**kwargs).execute()
-            for ev in resp.get("items", []) or []:
-                summarized = _summarize_event(ev)
-                summarized["account"] = account
-                all_events.append(summarized)
-        except Exception as exc:  # noqa: BLE001 — surface per-account failures
-            errors.append({"account": account, "error": f"{type(exc).__name__}: {exc}"})
+            cals = _account_calendar_list(account)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({
+                "account": account,
+                "stage": "calendarList",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            continue
 
-    # Sort the merged list by start time. Missing/None starts go last.
+        cals = _filter_calendars_by_role(cals, include_read_only=include_read_only)
+        svc = _service(account)
+        for cal in cals:
+            cal_id = cal["id"]
+            cal_summary = cal.get("summary")
+            try:
+                kwargs: dict[str, Any] = {
+                    "calendarId": cal_id,
+                    "timeMin": time_min,
+                    "timeMax": time_max,
+                    "singleEvents": True,
+                    "orderBy": "startTime",
+                    "maxResults": max_results_per_calendar,
+                }
+                if q:
+                    kwargs["q"] = q
+                resp = svc.events().list(**kwargs).execute()
+                for ev in resp.get("items", []) or []:
+                    summarized = _summarize_event(ev)
+                    summarized["account"] = account
+                    summarized["calendar_id"] = cal_id
+                    summarized["calendar_summary"] = cal_summary
+                    all_events.append(summarized)
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "account": account,
+                    "calendar_id": cal_id,
+                    "calendar_summary": cal_summary,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+
     all_events.sort(key=lambda e: e.get("start") or "￿")
     return {"events": all_events, "errors": errors}
 
@@ -218,11 +283,17 @@ def find_free_slots(
     time_max: str,
     duration_minutes: int,
 ) -> list[dict[str, str]]:
-    """Find continuous free intervals of at least ``duration_minutes`` across all ``accounts``.
+    """Find continuous free intervals of at least ``duration_minutes`` across
+    every writable subcalendar of every listed account.
 
-    Queries each account's primary calendar via the FreeBusy API, merges the
-    busy intervals, and returns the gaps inside [time_min, time_max].
-    Returned slots are in the same timezone as the input timestamps.
+    For each account, queries the FreeBusy API across all owner/writer
+    calendars in a single call (so a meeting on your "Family" subcalendar
+    correctly blocks the slot, not just events on the primary). Busy
+    intervals from every account+subcalendar are merged; the gaps inside
+    [time_min, time_max] are returned.
+
+    Returned slot timestamps are in the same timezone as the input
+    timestamps.
     """
     if duration_minutes <= 0:
         raise ValueError("duration_minutes must be > 0")
@@ -233,16 +304,25 @@ def find_free_slots(
     busy: list[tuple[datetime, datetime]] = []
     for account in accounts:
         svc = _service(account)
-        body = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": "primary"}]}
+        try:
+            cals = _account_calendar_list(account)
+        except Exception:
+            # Fall back to primary-only if calendarList isn't reachable.
+            cals = [{"id": "primary", "access_role": "owner"}]
+        cals = _filter_calendars_by_role(cals, include_read_only=False) or [
+            {"id": "primary"}
+        ]
+        items = [{"id": c["id"]} for c in cals]
+        body = {"timeMin": time_min, "timeMax": time_max, "items": items}
         resp = svc.freebusy().query(body=body).execute()
-        cal = (resp.get("calendars") or {}).get("primary") or {}
-        for b in cal.get("busy") or []:
-            busy.append(
-                (
-                    datetime.fromisoformat(b["start"].replace("Z", "+00:00")),
-                    datetime.fromisoformat(b["end"].replace("Z", "+00:00")),
+        for cal_id, cal_data in (resp.get("calendars") or {}).items():
+            for b in (cal_data or {}).get("busy") or []:
+                busy.append(
+                    (
+                        datetime.fromisoformat(b["start"].replace("Z", "+00:00")),
+                        datetime.fromisoformat(b["end"].replace("Z", "+00:00")),
+                    )
                 )
-            )
 
     busy.sort()
     merged: list[list[datetime]] = []
