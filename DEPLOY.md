@@ -113,19 +113,46 @@ gcloud config configurations list
 
 ## Updating Google Calendar credentials
 
-The Google OAuth refresh tokens live in
-`~/nanoclaw/runtime/sessions/.nanoclaw_google_creds.json` on the VM (mode `0600`,
-gitignored). To rotate or add an account, regenerate locally and `scp` again:
+The Google OAuth refresh tokens live in `~/nanoclaw/secrets/google-oauth-creds.json`
+on the VM (mode `0600`, owned by UID 10010 — the broker), only mounted into the
+`creds-broker` sidecar. To rotate or add an account, regenerate locally and `scp`:
 
 ```bash
 # on your laptop
 .venv/bin/python ops/google_oauth_bootstrap.py \
     --account work_admin --client-secrets path/to/client_secret_*.json \
-    --creds runtime/sessions/.nanoclaw_google_creds.json
+    --creds /tmp/.nanoclaw_google_creds.json
 gcloud compute scp --tunnel-through-iap \
     --zone=europe-west1-b --project=ironclaw-assistant \
-    runtime/sessions/.nanoclaw_google_creds.json \
-    nanoclaw:nanoclaw/runtime/sessions/.nanoclaw_google_creds.json
+    /tmp/.nanoclaw_google_creds.json \
+    nanoclaw:/tmp/google-oauth-creds.json
+gcloud compute ssh nanoclaw --tunnel-through-iap --zone=europe-west1-b --project=ironclaw-assistant \
+    --command='sudo mv /tmp/google-oauth-creds.json ~/nanoclaw/secrets/google-oauth-creds.json && sudo chown 10010:10010 ~/nanoclaw/secrets/google-oauth-creds.json && sudo chmod 600 ~/nanoclaw/secrets/google-oauth-creds.json'
 ```
 
-The agent picks up the new file on next request — no service restart needed.
+Broker reloads the file on every request — no restart needed.
+
+## Migrating from `.nanoclaw_google_creds.json` to the broker (Tier 1.3)
+
+If you're upgrading a VM that pre-dates Tier 1.3:
+
+```bash
+gcloud compute ssh nanoclaw --tunnel-through-iap \
+    --zone=europe-west1-b --project=ironclaw-assistant --command='set -e
+cd ~/nanoclaw
+sudo mkdir -p secrets
+sudo chown 10010:10010 secrets
+sudo chmod 700 secrets
+# Move existing google creds (if present) into the broker store
+[ -f runtime/sessions/.nanoclaw_google_creds.json ] && \
+    sudo mv runtime/sessions/.nanoclaw_google_creds.json secrets/google-oauth-creds.json
+# Pull the Telegram bot token out of .env into a dedicated file
+grep "^TELEGRAM_BOT_TOKEN=" .env | cut -d= -f2- | sudo tee secrets/telegram-bot-token > /dev/null
+# Lock everything down
+sudo chown 10010:10010 secrets/*
+sudo chmod 600 secrets/*
+ls -la secrets/'
+```
+
+After verifying the broker works (logs show `broker listening on /run/...`),
+remove `TELEGRAM_BOT_TOKEN=…` from `~/nanoclaw/.env`.
