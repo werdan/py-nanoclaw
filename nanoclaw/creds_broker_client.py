@@ -78,6 +78,20 @@ def fetch_google_access_token(account: str, *, sock_path: str | None = None) -> 
     return _request(sock, {"op": "google_access_token", "account": account})
 
 
+def list_google_accounts(*, sock_path: str | None = None) -> list[str]:
+    """Ask the broker which Google accounts are configured.
+
+    Used by ``nanoclaw.google_auth.list_accounts`` so the agent can discover
+    accounts without needing the credential file mounted into its container.
+    """
+    sock = sock_path or os.environ.get(AGENT_SOCKET_ENV, "").strip()
+    if not sock:
+        raise BrokerError(f"{AGENT_SOCKET_ENV} not set")
+    resp = _request(sock, {"op": "google_list_accounts"})
+    accounts = resp.get("accounts") or []
+    return [a for a in accounts if isinstance(a, str)]
+
+
 def fetch_telegram_bot_token(*, sock_path: str | None = None) -> str:
     """Ask the broker for the Telegram bot token. Returns the raw token string."""
     sock = sock_path or os.environ.get(BOT_SOCKET_ENV, "").strip()

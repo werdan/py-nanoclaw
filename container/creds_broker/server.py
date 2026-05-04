@@ -103,6 +103,13 @@ def _read_telegram_token(secrets_dir: Path) -> dict[str, Any]:
     return {"ok": True, "token": token}
 
 
+def _list_google_accounts(store: dict[str, Any]) -> dict[str, Any]:
+    accounts = store.get("accounts") or {}
+    if not isinstance(accounts, dict):
+        return {"ok": True, "accounts": []}
+    return {"ok": True, "accounts": sorted(k for k in accounts if k in ALLOWED_ACCOUNTS)}
+
+
 def _agent_dispatch(secrets_dir: Path, req: dict[str, Any]) -> dict[str, Any]:
     op = req.get("op")
     if op == "google_access_token":
@@ -116,6 +123,12 @@ def _agent_dispatch(secrets_dir: Path, req: dict[str, Any]) -> dict[str, Any]:
         except (FileNotFoundError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         return _refresh_google_access_token(store, account)
+    if op == "google_list_accounts":
+        try:
+            store = _load_google_store(secrets_dir / "google-oauth-creds.json")
+        except (FileNotFoundError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return _list_google_accounts(store)
     return {"ok": False, "error": f"unsupported op {op!r} on agent socket"}
 
 

@@ -62,6 +62,25 @@ def _save_store(store: dict[str, Any], path: Path) -> None:
 
 
 def list_accounts(path: Path | str | None = None) -> list[str]:
+    """Discover configured Google accounts.
+
+    Prefers the broker (when its socket is reachable) so the agent doesn't
+    need the creds file mounted. Falls back to reading the file directly for
+    local dev / when the broker is unreachable.
+    """
+    from nanoclaw.creds_broker_client import (
+        BrokerError,
+        is_agent_broker_available,
+        list_google_accounts,
+    )
+
+    if is_agent_broker_available():
+        try:
+            return list_google_accounts()
+        except BrokerError:
+            # Fall through to file-based path.
+            pass
+
     p = creds_path(path)
     if not p.exists():
         return []
