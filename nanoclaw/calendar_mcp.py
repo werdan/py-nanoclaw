@@ -68,57 +68,98 @@ def _summarize_event(ev: dict[str, Any]) -> dict[str, Any]:
 
 @mcp.tool()
 def list_configured_accounts() -> list[str]:
-    """List which Google accounts have stored credentials available."""
+    """List which Google accounts have stored credentials available.
+
+    Mostly informational — the read tools (``list_events``, ``list_calendars``)
+    already query every account automatically. You only need this to know what
+    values are valid for the ``account`` parameter on write tools.
+    """
     return list_accounts()
 
 
 @mcp.tool()
-def list_calendars(account: str) -> list[dict[str, Any]]:
-    """List subscribed calendars for ``account`` (one of personal/work_admin/work_corp).
+def list_calendars() -> dict[str, Any]:
+    """List calendars across **all** configured Google accounts.
 
-    Returns id, summary, primary flag, and timezone for each calendar.
+    Each entry includes the originating account so the agent can tell which
+    calendar belongs to which account when needed. Read operations should
+    treat the user's calendar as a single unified whole — there's no reason
+    to ask the user "which account?" for read questions.
+
+    Returns ``{"calendars": [...], "errors": [{"account": ..., "error": ...}]}``.
+    Per-account failures are surfaced as soft errors so partial results still
+    come through.
     """
-    svc = _service(account)
-    items = svc.calendarList().list().execute().get("items", []) or []
-    return [
-        {
-            "id": it.get("id"),
-            "summary": it.get("summary"),
-            "primary": bool(it.get("primary")),
-            "timezone": it.get("timeZone"),
-            "access_role": it.get("accessRole"),
-        }
-        for it in items
-    ]
+    accounts = list_accounts()
+    out: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for account in accounts:
+        try:
+            svc = _service(account)
+            for it in svc.calendarList().list().execute().get("items", []) or []:
+                out.append({
+                    "account": account,
+                    "id": it.get("id"),
+                    "summary": it.get("summary"),
+                    "primary": bool(it.get("primary")),
+                    "timezone": it.get("timeZone"),
+                    "access_role": it.get("accessRole"),
+                })
+        except Exception as exc:  # noqa: BLE001 — surface per-account failures
+            errors.append({"account": account, "error": f"{type(exc).__name__}: {exc}"})
+    return {"calendars": out, "errors": errors}
 
 
 @mcp.tool()
 def list_events(
-    account: str,
     time_min: str,
     time_max: str,
-    calendar_id: str = "primary",
     q: str | None = None,
-    max_results: int = 50,
-) -> list[dict[str, Any]]:
-    """List events on ``calendar_id`` between ``time_min`` and ``time_max``.
+    max_results_per_account: int = 50,
+) -> dict[str, Any]:
+    """List events across **all** configured Google accounts in one call.
+
+    The user's calendar is one unified whole — this tool merges events from
+    every connected Google account (``personal``, ``work_admin``, ``work_corp``)
+    and returns them sorted by start time. Each event carries an ``account``
+    field so you can mention the source when relevant; otherwise treat the
+    set as the user's single calendar.
 
     ``time_min`` / ``time_max`` are RFC3339 timestamps (e.g. ``2026-05-04T00:00:00Z``).
     ``q`` is an optional free-text search filter. Recurring events are expanded.
+    Each account's primary calendar is queried; ``max_results_per_account`` caps
+    the per-account fetch (the merged list can have up to N × num_accounts).
+
+    Returns ``{"events": [...], "errors": [...]}`` — a per-account error doesn't
+    abort the others.
     """
-    svc = _service(account)
-    kwargs: dict[str, Any] = {
-        "calendarId": calendar_id,
-        "timeMin": time_min,
-        "timeMax": time_max,
-        "singleEvents": True,
-        "orderBy": "startTime",
-        "maxResults": max_results,
-    }
-    if q:
-        kwargs["q"] = q
-    resp = svc.events().list(**kwargs).execute()
-    return [_summarize_event(ev) for ev in resp.get("items", []) or []]
+    accounts = list_accounts()
+    all_events: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for account in accounts:
+        try:
+            svc = _service(account)
+            kwargs: dict[str, Any] = {
+                "calendarId": "primary",
+                "timeMin": time_min,
+                "timeMax": time_max,
+                "singleEvents": True,
+                "orderBy": "startTime",
+                "maxResults": max_results_per_account,
+            }
+            if q:
+                kwargs["q"] = q
+            resp = svc.events().list(**kwargs).execute()
+            for ev in resp.get("items", []) or []:
+                summarized = _summarize_event(ev)
+                summarized["account"] = account
+                all_events.append(summarized)
+        except Exception as exc:  # noqa: BLE001 — surface per-account failures
+            errors.append({"account": account, "error": f"{type(exc).__name__}: {exc}"})
+
+    # Sort the merged list by start time. Missing/None starts go last.
+    all_events.sort(key=lambda e: e.get("start") or "￿")
+    return {"events": all_events, "errors": errors}
 
 
 @mcp.tool()
