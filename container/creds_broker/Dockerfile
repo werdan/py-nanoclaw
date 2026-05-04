@@ -15,7 +15,8 @@ WORKDIR /app
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir \
         "google-auth>=2.30" \
-        "google-auth-httplib2>=0.2"
+        "google-auth-httplib2>=0.2" \
+        "requests>=2.32"
 
 COPY container/creds_broker/server.py /app/server.py
 
