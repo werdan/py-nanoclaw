@@ -10,3 +10,5 @@ build/
 client_secret*.json
 runtime/sessions/.nanoclaw_google_creds*
 runtime/sessions/.google_oauth_*
+# Tier 1.3 broker secret store — never commit
+secrets/

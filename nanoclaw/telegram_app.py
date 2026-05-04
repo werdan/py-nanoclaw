@@ -204,7 +204,7 @@ def main() -> None:
     # NODE_EXTRA_CA_CERTS, ANTHROPIC_API_KEY) — applying those to the bot
     # would re-route Telegram traffic through OneCLI's MITM proxy, which has
     # no rule for api.telegram.org and breaks startup with EAI_NONAME.
-    _BOT_ONECLI_KEYS = {"TELEGRAM_BOT_TOKEN", "TELEGRAM_USER_ID"}
+    _BOT_ONECLI_KEYS = {"TELEGRAM_USER_ID"}
     from nanoclaw.onecli_config import apply_to_environ, fetch_env
     onecli_env = {k: v for k, v in fetch_env().items() if k in _BOT_ONECLI_KEYS}
     if onecli_env:
@@ -212,9 +212,28 @@ def main() -> None:
         if applied:
             logger.info("Bootstrapped %d env var(s) from OneCLI: %s", len(applied), sorted(applied))
 
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    # Telegram bot token: prefer the creds-broker sidecar (Tier 1.3) so the
+    # token doesn't have to live in `.env` on the host. Falls through to the
+    # env var for local dev / rollback.
+    token: str | None = None
+    from nanoclaw.creds_broker_client import (
+        BrokerError,
+        fetch_telegram_bot_token,
+        is_bot_broker_available,
+    )
+    if is_bot_broker_available():
+        try:
+            token = fetch_telegram_bot_token()
+            logger.info("Telegram bot token fetched from creds broker")
+        except BrokerError as exc:
+            logger.warning("creds broker available but telegram fetch failed (%s); falling back to env", exc)
     if not token:
-        raise SystemExit("Set TELEGRAM_BOT_TOKEN in the environment or .env")
+        token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise SystemExit(
+            "TELEGRAM_BOT_TOKEN unavailable: creds broker has no telegram-bot-token "
+            "and the env var is not set"
+        )
 
     allowed_user_id = _required_user_id()
     # OpenAI client routes through OneCLI when possible — real key never

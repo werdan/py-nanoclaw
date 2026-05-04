@@ -26,9 +26,16 @@ services:
       # CA cert for the OneCLI HTTPS proxy (used only by the OpenAI client;
       # Telegram client still goes direct, see nanoclaw/openai_client.py).
       - onecli-data:/onecli-data:ro
+      # Tier 1.3: per-consumer creds-broker socket. Bot can call only the bot
+      # ops; the agent gets a separate socket on a different volume.
+      - bot-creds-socket:/run/creds:rw
     environment:
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      # TELEGRAM_BOT_TOKEN is read from the creds-broker socket below; this env
+      # var is only used as a local-dev fallback if NANOCLAW_BOT_BROKER_SOCKET
+      # isn't reachable.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_USER_ID: ${TELEGRAM_USER_ID}
+      NANOCLAW_BOT_BROKER_SOCKET: /run/creds/sock
       # OPENAI_API_KEY intentionally NOT set: bot constructs its OpenAI
       # client through the OneCLI proxy (Tier 1.1 follow-up). OneCLI injects
       # the real key on outbound api.openai.com requests. The .env can keep
@@ -47,6 +54,7 @@ services:
     depends_on:
       - agent
       - onecli
+      - creds-broker
 
   agent:
     build:
@@ -77,6 +85,10 @@ services:
     environment:
       NANOCLAW_AGENT_PORT: 8000
       NANOCLAW_TASKS_PATH: ${NANOCLAW_TASKS_PATH:-/runtime/sessions/.nanoclaw_tasks.json}
+      # Tier 1.3: agent fetches Google OAuth access tokens from the creds-broker
+      # over a Unix socket. The refresh-token file is no longer mounted into the
+      # agent. NANOCLAW_GOOGLE_CREDS_PATH stays as a local-dev fallback.
+      NANOCLAW_AGENT_BROKER_SOCKET: /run/creds/sock
       NANOCLAW_GOOGLE_CREDS_PATH: ${NANOCLAW_GOOGLE_CREDS_PATH:-/runtime/sessions/.nanoclaw_google_creds.json}
       NANOCLAW_CWD: /work
       CLAUDE_MODEL: ${CLAUDE_MODEL:-}
@@ -102,10 +114,47 @@ services:
       - ${PWD}/data/user-context/${USER_CONTEXT_SUBPATH:-}:/work
       - ${PWD}/.claude:/work/.claude:rw
       - onecli-data:/onecli-data:ro
+      # Tier 1.3: agent's per-consumer creds-broker socket. Distinct volume
+      # from bot's so a compromised agent cannot ask the broker for the
+      # Telegram bot token (op denied at the bot socket only).
+      - agent-creds-socket:/run/creds:rw
     expose:
       - "8000"
     depends_on:
       - onecli
+      - creds-broker
+
+  creds-broker:
+    # Tier 1.3 sidecar. Owns the high-value secrets (Google OAuth refresh
+    # tokens, Telegram bot token) and vends short-lived access tokens to
+    # consumers over per-consumer Unix sockets. The bot and agent never read
+    # the underlying secret files directly — refresh tokens stay inside this
+    # container's filesystem only.
+    build:
+      context: .
+      dockerfile: container/creds_broker/Dockerfile
+    image: nanoclaw-creds-broker
+    restart: unless-stopped
+    user: "broker"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=4m
+      - /home/broker:mode=1777,size=4m
+    volumes:
+      # Read-only: secret files live here. Owned by `broker` UID on host;
+      # mode 0600 each. Move runtime/sessions/.nanoclaw_google_creds.json
+      # here as `secrets/google-oauth-creds.json` and add a one-line
+      # `secrets/telegram-bot-token` file.
+      - ${PWD}/secrets:/secrets:ro
+      # Per-consumer sockets — broker creates one socket on each volume,
+      # consumers mount only their corresponding volume.
+      - agent-creds-socket:/run/agent-creds
+      - bot-creds-socket:/run/bot-creds
+    expose: []
 
   postgres:
     image: postgres:16-alpine
@@ -179,6 +228,11 @@ services:
 volumes:
   onecli-data:
   pgdata:
+  # Tier 1.3 per-consumer creds-broker sockets. Each is an empty named volume
+  # the broker mounts RW (creates a socket file inside) and the corresponding
+  # consumer (bot or agent) mounts the same volume to find that socket.
+  agent-creds-socket:
+  bot-creds-socket:
 
 networks:
   agent:

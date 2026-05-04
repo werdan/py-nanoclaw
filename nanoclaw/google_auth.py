@@ -75,9 +75,65 @@ def list_accounts(path: Path | str | None = None) -> list[str]:
     return sorted(k for k in accounts if k in ALLOWED_ACCOUNTS)
 
 
+def _broker_refresh_handler(account: str):
+    """Returns a `refresh_handler` callable that asks the broker sidecar for a
+    fresh access token. Used so a running ``Credentials`` object that hits a 401
+    mid-session re-mints transparently — same UX as a refresh-token-backed
+    Credentials, except the refresh token never leaves the broker container.
+    """
+    from datetime import datetime, timedelta
+    from nanoclaw.creds_broker_client import BrokerError, fetch_google_access_token
+
+    def _handler(_request, _scopes):
+        try:
+            resp = fetch_google_access_token(account)
+        except BrokerError as exc:
+            raise CredsError(f"broker access-token fetch failed for {account!r}: {exc}") from exc
+        auth = resp["authorization"]
+        token = auth[len("Bearer "):] if auth.startswith("Bearer ") else auth
+        # Google access tokens are typically valid 60 minutes. The broker tells
+        # us the actual expiry; if it didn't, assume 50 min for a safety margin.
+        expires_raw = resp.get("expires_at")
+        if isinstance(expires_raw, str):
+            try:
+                expiry = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+                if expiry.tzinfo is not None:
+                    expiry = expiry.replace(tzinfo=None)  # google-auth uses naive UTC
+            except ValueError:
+                expiry = datetime.utcnow() + timedelta(minutes=50)
+        else:
+            expiry = datetime.utcnow() + timedelta(minutes=50)
+        return token, expiry
+
+    return _handler
+
+
+def _broker_credentials(account: str) -> Credentials:
+    """Build a Credentials backed by the broker — no refresh_token in this process.
+
+    The handler is what googleapiclient invokes whenever it sees an expired
+    token; we pre-mint once at construction so the first API call doesn't pay
+    the broker round-trip latency.
+    """
+    handler = _broker_refresh_handler(account)
+    token, expiry = handler(None, None)
+    return Credentials(token=token, refresh_handler=handler, expiry=expiry)
+
+
 def load_credentials(account: str, path: Path | str | None = None) -> Credentials:
     if account not in ALLOWED_ACCOUNTS:
         raise CredsError(f"unknown account {account!r}; allowed: {ALLOWED_ACCOUNTS}")
+
+    # Production path: ask the broker sidecar; refresh tokens never reach this
+    # process. Activated when the broker socket env var is set AND the socket
+    # exists on disk (so a misconfigured mount falls back instead of hanging).
+    from nanoclaw.creds_broker_client import is_agent_broker_available
+    if is_agent_broker_available():
+        return _broker_credentials(account)
+
+    # Fallback path: read the local creds file directly. Used in local dev
+    # (no sidecar) and as a graceful degradation if the broker is unreachable
+    # at startup.
     store = _load_store(creds_path(path))
     accounts = store.get("accounts", {})
     if not isinstance(accounts, dict) or account not in accounts:
